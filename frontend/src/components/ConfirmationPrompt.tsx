@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { AlertTriangle, Trash2, X, Loader2 } from 'lucide-react';
+import { AlertCircle, Trash2, X, Loader2 } from 'lucide-react';
 import type { ConfirmationInfo } from '../types';
 
 interface ConfirmationPromptProps {
@@ -35,28 +35,28 @@ export const ConfirmationPrompt = ({
   }
 
   return (
-    <div className="my-3 p-4 rounded-xl border border-amber-500/40 bg-amber-950/20 backdrop-blur-sm shadow-lg">
-      <div className="flex items-start gap-3">
-        <div className="p-2 rounded-lg bg-amber-500/20 text-amber-400 mt-0.5">
-          <AlertTriangle className="w-5 h-5" />
+    <div className="my-2.5 p-3.5 rounded-md border border-[#262D38] bg-[#161B22] text-xs">
+      <div className="flex items-start gap-2.5">
+        <div className="p-1 text-[#C9A659] mt-0.5">
+          <AlertCircle className="w-4 h-4" />
         </div>
-        <div className="flex-1">
-          <h4 className="text-sm font-semibold text-amber-200">
-            Safety Confirmation Required
-          </h4>
-          <p className="text-xs text-amber-300/80 mt-1">
-            The chatbot is requesting to permanently delete{' '}
-            <strong className="text-white underline font-mono">
+        <div className="flex-1 min-w-0">
+          <div className="font-medium text-[#EDEAE3] font-sans">
+            Confirm permanent deletion
+          </div>
+          <p className="text-[#8B93A1] mt-1 leading-relaxed">
+            The agent is requesting to delete{' '}
+            <span className="font-mono text-[#EDEAE3] bg-[#0F1419] px-1.5 py-0.5 rounded border border-[#262D38]">
               {confirmation.target}
-            </strong>
-            . This cannot be undone.
+            </span>
+            . This action cannot be undone.
           </p>
 
-          <div className="flex items-center gap-2 mt-3.5">
+          <div className="flex items-center gap-2 mt-3">
             <button
               onClick={() => handleAction(true)}
               disabled={loading}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white text-xs font-medium rounded-lg shadow transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#2A1D20] border border-[#522931] hover:bg-[#382329] text-[#f87171] disabled:opacity-50 text-xs font-medium rounded-md transition-colors"
             >
               {loading ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -69,7 +69,7 @@ export const ConfirmationPrompt = ({
             <button
               onClick={() => handleAction(false)}
               disabled={loading}
-              className="flex items-center gap-1 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-300 text-xs font-medium rounded-lg transition-colors"
+              className="flex items-center gap-1 px-3 py-1.5 bg-[#0F1419] border border-[#262D38] hover:bg-[#1C232C] disabled:opacity-50 text-[#8B93A1] hover:text-[#EDEAE3] text-xs font-medium rounded-md transition-colors"
             >
               <X className="w-3.5 h-3.5" />
               Cancel
