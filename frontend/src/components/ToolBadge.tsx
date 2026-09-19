@@ -6,9 +6,9 @@ import {
   List,
   Edit3,
   Trash2,
-  CheckCircle2,
-  AlertTriangle,
-  XCircle,
+  Check,
+  AlertCircle,
+  X,
   ChevronDown,
   ChevronRight,
   Terminal,
@@ -25,19 +25,19 @@ export const ToolBadge = ({ tool }: ToolBadgeProps) => {
   const getToolIcon = (name: string) => {
     switch (name) {
       case 'create_folder':
-        return <FolderPlus className="w-4 h-4 text-emerald-400" />;
+        return <FolderPlus className="w-3.5 h-3.5 text-[#C9A659]" />;
       case 'create_file':
-        return <FilePlus className="w-4 h-4 text-blue-400" />;
+        return <FilePlus className="w-3.5 h-3.5 text-[#C9A659]" />;
       case 'read_file':
-        return <FileText className="w-4 h-4 text-indigo-400" />;
+        return <FileText className="w-3.5 h-3.5 text-[#8B93A1]" />;
       case 'list_folder':
-        return <List className="w-4 h-4 text-cyan-400" />;
+        return <List className="w-3.5 h-3.5 text-[#8B93A1]" />;
       case 'update_file':
-        return <Edit3 className="w-4 h-4 text-amber-400" />;
+        return <Edit3 className="w-3.5 h-3.5 text-[#C9A659]" />;
       case 'delete_item':
-        return <Trash2 className="w-4 h-4 text-rose-400" />;
+        return <Trash2 className="w-3.5 h-3.5 text-[#8B93A1]" />;
       default:
-        return <Terminal className="w-4 h-4 text-purple-400" />;
+        return <Terminal className="w-3.5 h-3.5 text-[#8B93A1]" />;
     }
   };
 
@@ -45,73 +45,83 @@ export const ToolBadge = ({ tool }: ToolBadgeProps) => {
     switch (status) {
       case 'success':
         return (
-          <span className="flex items-center gap-1 text-xs text-emerald-400 font-medium bg-emerald-950/60 border border-emerald-800/60 px-2 py-0.5 rounded-full">
-            <CheckCircle2 className="w-3 h-3" /> Executed
+          <span className="inline-flex items-center gap-1 text-[11px] text-[#C9A659] font-mono">
+            <Check className="w-3 h-3 text-[#C9A659]" />
+            <span>done</span>
           </span>
         );
       case 'pending_confirmation':
         return (
-          <span className="flex items-center gap-1 text-xs text-amber-400 font-medium bg-amber-950/60 border border-amber-800/60 px-2 py-0.5 rounded-full animate-pulse">
-            <AlertTriangle className="w-3 h-3" /> Needs Confirmation
+          <span className="inline-flex items-center gap-1 text-[11px] text-[#C9A659] font-mono">
+            <AlertCircle className="w-3 h-3" />
+            <span>pending</span>
           </span>
         );
       case 'cancelled':
         return (
-          <span className="flex items-center gap-1 text-xs text-zinc-400 font-medium bg-zinc-800/60 border border-zinc-700/60 px-2 py-0.5 rounded-full">
-            <XCircle className="w-3 h-3" /> Cancelled
+          <span className="inline-flex items-center gap-1 text-[11px] text-[#8B93A1] font-mono">
+            <X className="w-3 h-3" />
+            <span>cancelled</span>
           </span>
         );
       case 'error':
         return (
-          <span className="flex items-center gap-1 text-xs text-rose-400 font-medium bg-rose-950/60 border border-rose-800/60 px-2 py-0.5 rounded-full">
-            <XCircle className="w-3 h-3" /> Error
+          <span className="inline-flex items-center gap-1 text-[11px] text-[#e06c75] font-mono">
+            <X className="w-3 h-3" />
+            <span>error</span>
           </span>
         );
     }
   };
 
+  const argSummary = Object.entries(tool.arguments)
+    .map(([k, v]) => `${k}=${typeof v === 'string' ? `"${v}"` : JSON.stringify(v)}`)
+    .join(', ');
+
   return (
-    <div className="my-2 rounded-lg border border-slate-800 bg-slate-900/80 overflow-hidden text-sm">
+    <div className="my-1.5 rounded-md border border-[#262D38] bg-[#0F1419]/80 overflow-hidden text-xs">
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="w-full flex items-center justify-between p-2.5 hover:bg-slate-800/50 transition-colors text-left"
+        className="w-full flex items-center justify-between px-3 py-2 hover:bg-[#1C232C]/60 transition-colors text-left"
       >
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 min-w-0 pr-2">
           {getToolIcon(tool.name)}
-          <span className="font-mono font-medium text-slate-200">
+          <span className="font-mono font-medium text-[#EDEAE3] truncate">
             {tool.name}
           </span>
-          <span className="text-xs text-slate-500 font-mono">
-            ({Object.keys(tool.arguments).join(', ')})
-          </span>
+          {argSummary && (
+            <span className="text-[11px] text-[#8B93A1] font-mono truncate max-w-[280px]">
+              ({argSummary})
+            </span>
+          )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           {getStatusBadge(tool.status)}
           {isOpen ? (
-            <ChevronDown className="w-4 h-4 text-slate-400" />
+            <ChevronDown className="w-3.5 h-3.5 text-[#8B93A1]" />
           ) : (
-            <ChevronRight className="w-4 h-4 text-slate-400" />
+            <ChevronRight className="w-3.5 h-3.5 text-[#8B93A1]" />
           )}
         </div>
       </button>
 
       {isOpen && (
-        <div className="p-3 border-t border-slate-800 bg-slate-950/70 space-y-2 text-xs font-mono">
+        <div className="p-3 border-t border-[#262D38] bg-[#0F1419] space-y-2.5 text-xs font-mono">
           <div>
-            <div className="text-slate-400 font-semibold mb-1 uppercase tracking-wider text-[10px]">
-              Parameters:
+            <div className="text-[#8B93A1] text-[11px] mb-1">
+              arguments
             </div>
-            <pre className="p-2 bg-slate-900 rounded border border-slate-800 text-cyan-300 overflow-x-auto">
+            <pre className="p-2 bg-[#161B22] rounded-md border border-[#262D38] text-[#EDEAE3] overflow-x-auto text-[11px]">
               {JSON.stringify(tool.arguments, null, 2)}
             </pre>
           </div>
 
           {tool.result && (
             <div>
-              <div className="text-slate-400 font-semibold mb-1 uppercase tracking-wider text-[10px]">
-                MCP Server Output:
+              <div className="text-[#8B93A1] text-[11px] mb-1">
+                result
               </div>
-              <pre className="p-2 bg-slate-900 rounded border border-slate-800 text-slate-300 overflow-x-auto whitespace-pre-wrap">
+              <pre className="p-2 bg-[#161B22] rounded-md border border-[#262D38] text-[#8B93A1] overflow-x-auto whitespace-pre-wrap text-[11px]">
                 {tool.result}
               </pre>
             </div>
