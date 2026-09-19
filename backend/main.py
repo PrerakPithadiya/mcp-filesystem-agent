@@ -131,6 +131,8 @@ async def get_file_content(path: str):
         return {"path": path, "content": content, "size": safe.stat().st_size}
     except PermissionError as pe:
         raise HTTPException(status_code=403, detail=str(pe))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

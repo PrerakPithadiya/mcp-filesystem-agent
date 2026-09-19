@@ -47,12 +47,20 @@ def get_safe_path(user_path: str, workspace_root: Optional[Path] = None) -> Path
         workspace_root = workspace_root.resolve()
         workspace_root.mkdir(parents=True, exist_ok=True)
 
-    cleaned_str = str(user_path).strip().replace("\\", "/")
+    raw_str = str(user_path).strip()
 
-    # Prevent absolute root prefixes like "/foo" from escaping when joined
-    while cleaned_str.startswith("/"):
-        cleaned_str = cleaned_str[1:]
+    # Check if the user specified an absolute path (POSIX root /..., Windows drive C:\..., or UNC \\...)
+    if raw_str.startswith(("/", "\\")) or (len(raw_str) > 1 and raw_str[1] == ":"):
+        try:
+            target_path = Path(raw_str).resolve()
+            target_path.relative_to(workspace_root)
+            return target_path
+        except (ValueError, Exception):
+            raise PermissionError(
+                f"Security Violation: Target path '{user_path}' attempts to access files outside the safe workspace."
+            )
 
+    cleaned_str = raw_str.replace("\\", "/")
     target_path = (workspace_root / cleaned_str).resolve()
 
     # Strict containment check

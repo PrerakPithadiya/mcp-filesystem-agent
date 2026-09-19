@@ -26,7 +26,15 @@ Key Instructions:
    - `update_file(file_path, content, mode)`: Overwrite or append to an existing file. Mode is 'overwrite' or 'append'.
    - `delete_item(path, recursive)`: Permanently delete a file or directory. For non-empty folders, set recursive=True.
 
-2. Terse & Minimal Input Handling:
+2. RESPONSE FORMATTING (CRITICAL):
+   - Provide CLEAN, CONVERSATIONAL responses only.
+   - NEVER include tool call syntax, function names, or technical details in your conversational response.
+   - Do NOT write things like "read_file(file_path='config.json')" or "I called the create_folder tool".
+   - Instead, write natural responses like "I've read the config file" or "The folder has been created successfully".
+   - The tool calls are handled automatically by the system and displayed separately in the UI.
+   - Focus on what happened and the result, not the technical implementation.
+
+3. Terse & Minimal Input Handling:
    - Understand short-hand notations accurately:
      * `filename.ext: some text` or `filename: some text` -> User wants to create or update that file with `some text`.
      * `todo: buy milk` -> Create or append to `todo.txt` with "buy milk".
@@ -35,23 +43,48 @@ Key Instructions:
      * `rm filename` or `delete filename` -> Call `delete_item(filename)`.
    - Never refuse a task just because the user wrote very little, as long as the intent is reasonably clear.
 
-3. Ambiguity & Vague Input Protection (CRITICAL):
+4. Ambiguity & Vague Input Protection (CRITICAL):
    - If the user gives a vague or underspecified command (such as simply "delete", "remove it", "read", "update") WITHOUT specifying which file/folder AND there is no clear target in recent conversation history:
      * DO NOT guess or pick a random file or folder!
      * DO NOT execute any random or destructive tools!
      * Ask the user politely which file or folder they would like to operate on.
 
-4. Conversational Context & Pronoun Resolution:
+5. Conversational Context & Pronoun Resolution:
    - When the user refers to "it", "that file", "the previous folder", or uses follow-up phrases (e.g. "now change it to...", "read it", "delete it"), resolve the reference from the conversation history.
 
-5. Self-Correction & Error Recovery:
-   - If calling `create_file` fails because the file already exists, and the user's intent was to set or write content to that file, automatically invoke `update_file` with mode="overwrite" to fulfill the request.
-   - When deleting a folder, always ensure `recursive=True` so that folders with contents can be deleted after confirmation.
+6. Multi-Item and List Interpretation (CRITICAL INTELLIGENCE RULE):
+   - When a user provides a list of names separated by commas, 'and', or conjunctions (e.g. "Create a folder named 'Prerak, Utsav, Umang'", "make folders for Alice, Bob and Charlie", "create directories a, b, c"):
+     * ALWAYS interpret this as a request to create MULTIPLE SEPARATE FOLDERS, one for each individual name!
+     * NEVER create a single folder or file containing commas in its name like 'Prerak, Utsav, Umang'. Such names are user shorthand for multiple directories.
+     * Call `create_folder` separately for each individual name:
+       - `create_folder(folder_path="Prerak")`
+       - `create_folder(folder_path="Utsav")`
+       - `create_folder(folder_path="Umang")`
+   - If the user asks to add files inside (e.g. "inside this folder, you need to add three text files" or "inside each folder, add a file"):
+     * Create the corresponding file inside each of the created folders:
+       - `create_file(file_path="Prerak/prerak.txt", content="...")`
+       - `create_file(file_path="Utsav/utsav.txt", content="...")`
+       - `create_file(file_path="Umang/umang.txt", content="...")`
 
-6. Sandboxing & Security:
-   - All operations are strictly sandboxed inside the workspace. If an operation fails with a security violation or path traversal error (e.g., trying to access `../`), explain politely that access outside the safe workspace is strictly prohibited.
+7. Deletion & Workspace Wipes (CRITICAL):
+   - When the user asks to delete multiple files or folders (e.g. "delete the folder named prerak, umang and utsav", "delete folders a, b, and c", "remove file1.txt and file2.txt"):
+     * Call `delete_item` separately for EACH item requested:
+       - `delete_item(path="prerak", recursive=True)`
+       - `delete_item(path="umang", recursive=True)`
+       - `delete_item(path="utsav", recursive=True)`
+   - When the user asks to delete anything, such as "delete notes.txt", "delete folder1", or "Delete everything currently in my workshop/workspace", "clear workspace", "wipe all":
+     * YOU MUST ALWAYS CALL `delete_item`!
+     * NEVER write plain text asking "Are you sure?" yourself! The backend system has an automatic interception gate that catches `delete_item` and presents an interactive UI card with [Confirm Delete] and [Cancel] buttons.
+     * If you only write confirmation text without calling `delete_item`, the confirmation buttons will NOT render and the action cannot happen!
+     * To delete everything or clear the workspace: call `delete_item(path="everything", recursive=True)`.
+     * To delete a specific file or folder: call `delete_item(path=target, recursive=True)`.
 
-7. Keep responses concise, clear, and helpful. State clearly what was done or what confirmation is required.
+8. Security & Sandbox Boundary:
+   - All filesystem operations are strictly confined within the safe workspace sandbox.
+   - When a user asks to access, read, write, or delete parent directory references like '..', '../', or outside system files (e.g. 'delete ..', 'rm ..', 'read ../../PRD.md', 'list C:\\Windows'):
+     * Treat '..' specifically as the parent directory path, NOT as trailing ellipsis or punctuation.
+     * Do NOT treat 'delete ..' as an incomplete sentence.
+     * Call the appropriate tool (e.g. `delete_item(path="..")`), which will be intercepted safely by the sandbox with a security violation, or inform the user that accessing or deleting files outside the safe workspace is prohibited.
 """
 
 # In-memory store for pending confirmations: {conf_id: {"tool": str, "arguments": dict, "prompt": str}}
@@ -147,48 +180,76 @@ class LLMAgent:
             requires_conf = False
             conf_details = None
 
-            for tool_call in tool_use_blocks:
-                tool_name = tool_call.name
-                tool_input = tool_call.input
+            # Separate destructive delete calls from non-destructive calls
+            delete_blocks = [b for b in tool_use_blocks if b.name == "delete_item"]
+            other_blocks = [b for b in tool_use_blocks if b.name != "delete_item"]
 
-                # STAGE 4: Intercept delete_item for confirmation
-                if tool_name == "delete_item":
-                    conf_id = f"conf_{uuid.uuid4().hex[:8]}"
-                    target_path = tool_input.get("path", "unknown")
-                    try:
-                        from server.sandbox import get_safe_path
-                        safe_p = get_safe_path(target_path)
-                        if safe_p.is_dir() and not tool_input.get("recursive"):
-                            tool_input["recursive"] = True
-                    except Exception:
-                        pass
-                    PENDING_CONFIRMATIONS[conf_id] = {
-                        "tool": tool_name,
+            if delete_blocks:
+                delete_items = []
+                targets_list = []
+                for tool_call in delete_blocks:
+                    tool_input = tool_call.input or {}
+                    target_path = str(tool_input.get("path", "unknown")).strip()
+                    is_everything = target_path.lower() in ("everything", "*", "all", "all items", "workspace", "workshop", ".")
+                    if is_everything:
+                        target_display = "everything in workspace"
+                        tool_input["recursive"] = True
+                        tool_input["path"] = "everything"
+                    else:
+                        target_display = target_path
+                        try:
+                            from server.sandbox import get_safe_path
+                            safe_p = get_safe_path(target_path)
+                            if safe_p.is_dir() and not tool_input.get("recursive"):
+                                tool_input["recursive"] = True
+                        except Exception:
+                            pass
+                    targets_list.append(target_display)
+                    delete_items.append({
+                        "tool": "delete_item",
                         "arguments": tool_input,
-                        "prompt": user_message,
-                    }
-                    requires_conf = True
-                    conf_details = {
-                        "id": conf_id,
-                        "action": "delete_item",
-                        "target": target_path,
-                        "details": f"Delete '{target_path}'" + (" (and all sub-items)" if tool_input.get("recursive") else ""),
-                    }
+                        "display": target_display,
+                    })
                     executed_tools.append({
-                        "name": tool_name,
+                        "name": "delete_item",
                         "arguments": tool_input,
                         "status": "pending_confirmation",
-                        "result": "Awaiting user confirmation before deleting...",
+                        "result": f"Awaiting user confirmation before deleting '{target_display}'...",
                     })
-                    # Do not execute now!
-                    return {
-                        "reply": f"⚠️ **Delete Confirmation Required**:\nAre you sure you want to permanently delete **`{target_path}`**? This action cannot be undone.",
-                        "requires_confirmation": True,
-                        "confirmation": conf_details,
-                        "tool_calls": executed_tools,
-                    }
 
-                # Non-destructive tools: Execute immediately
+                conf_id = f"conf_{uuid.uuid4().hex[:8]}"
+                if len(targets_list) == 1:
+                    single_target = targets_list[0]
+                    reply_prompt = f"⚠️ **Delete Confirmation Required**:\nAre you sure you want to permanently delete **`{single_target}`**? This action cannot be undone."
+                    details_text = f"Delete '{single_target}'"
+                else:
+                    formatted_targets = ", ".join(f"`{t}`" for t in targets_list)
+                    reply_prompt = f"⚠️ **Delete Confirmation Required**:\nAre you sure you want to permanently delete these {len(targets_list)} items: {formatted_targets}? This action cannot be undone."
+                    details_text = f"Delete {len(targets_list)} items: {', '.join(targets_list)}"
+
+                PENDING_CONFIRMATIONS[conf_id] = {
+                    "tool": "batch_delete" if len(delete_items) > 1 else "delete_item",
+                    "items": delete_items,
+                    "display_target": ", ".join(targets_list),
+                    "prompt": user_message,
+                }
+
+                return {
+                    "reply": reply_prompt,
+                    "requires_confirmation": True,
+                    "confirmation": {
+                        "id": conf_id,
+                        "action": "delete_item",
+                        "target": ", ".join(targets_list),
+                        "details": details_text,
+                    },
+                    "tool_calls": executed_tools,
+                }
+
+            # Non-destructive tools: Execute immediately
+            for tool_call in other_blocks:
+                tool_name = tool_call.name
+                tool_input = tool_call.input
                 result_str = await mcp_client_service.call_tool(tool_name, tool_input)
                 executed_tools.append({
                     "name": tool_name,
@@ -266,8 +327,23 @@ class LLMAgent:
                         )
                     )
 
-            candidate_models = [config.GEMINI_MODEL, "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
-            models_to_try = list(dict.fromkeys(candidate_models))
+            import asyncio
+
+            async def _send_with_retry(chat_obj, msg_payload, max_retries=4):
+                for attempt in range(max_retries):
+                    try:
+                        return chat_obj.send_message(msg_payload)
+                    except Exception as ex:
+                        err_text = str(ex)
+                        if ("429" in err_text or "RESOURCE_EXHAUSTED" in err_text or "503" in err_text) and attempt < max_retries - 1:
+                            backoff = 2.5 * (attempt + 1)
+                            logger.warning(f"Gemini API rate limit/busy ({err_text[:70]}...). Retrying in {backoff}s (attempt {attempt+1}/{max_retries})...")
+                            await asyncio.sleep(backoff)
+                            continue
+                        raise ex
+
+            candidate_models = [config.GEMINI_MODEL, "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.6-flash"]
+            models_to_try = list(dict.fromkeys([m for m in candidate_models if m]))
             last_err = None
 
             for model_name in models_to_try:
@@ -280,14 +356,12 @@ class LLMAgent:
                         ),
                         history=chat_history if chat_history else None,
                     )
-                    response = chat.send_message(user_message)
+                    response = await _send_with_retry(chat, user_message)
                     break
                 except Exception as e:
                     err_str = str(e)
-                    if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "503" in err_str:
-                        logger.warning(f"Model {model_name} rate-limited: {err_str[:100]}... Trying fallback.")
-                        import asyncio
-                        await asyncio.sleep(1.5)
+                    if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "503" in err_str or "404" in err_str:
+                        logger.warning(f"Model {model_name} failed ({err_str[:80]}...); trying fallback.")
                         last_err = e
                         continue
                     raise e
@@ -304,45 +378,88 @@ class LLMAgent:
                 round_count += 1
                 function_responses = []
 
-                for fc in response.function_calls:
-                    tool_name = fc.name
-                    tool_input = dict(fc.args) if fc.args else {}
+                # Separate destructive delete calls from non-destructive calls
+                delete_fcs = [fc for fc in response.function_calls if fc.name == "delete_item"]
+                other_fcs = [fc for fc in response.function_calls if fc.name != "delete_item"]
 
-                    # Intercept destructive delete_item action for confirmation
-                    if tool_name == "delete_item":
-                        conf_id = f"conf_{uuid.uuid4().hex[:8]}"
-                        target_path = tool_input.get("path", "unknown")
-                        try:
-                            from server.sandbox import get_safe_path
-                            safe_p = get_safe_path(target_path)
-                            if safe_p.is_dir() and not tool_input.get("recursive"):
-                                tool_input["recursive"] = True
-                        except Exception:
-                            pass
-                        PENDING_CONFIRMATIONS[conf_id] = {
-                            "tool": tool_name,
+                # If there are delete calls, batch ALL of them into a single confirmation
+                if delete_fcs:
+                    delete_items = []
+                    targets_list = []
+                    for fc in delete_fcs:
+                        tool_input = dict(fc.args) if fc.args else {}
+                        target_path = str(tool_input.get("path", "unknown")).strip()
+                        is_everything = target_path.lower() in ("everything", "*", "all", "all items", "workspace", "workshop", ".")
+                        if is_everything:
+                            target_display = "everything in workspace"
+                            tool_input["recursive"] = True
+                            tool_input["path"] = "everything"
+                        else:
+                            target_display = target_path
+                            try:
+                                from server.sandbox import get_safe_path
+                                safe_p = get_safe_path(target_path)
+                                if safe_p.is_dir() and not tool_input.get("recursive"):
+                                    tool_input["recursive"] = True
+                            except PermissionError as pe:
+                                return {
+                                    "reply": f"🛡️ **Security Boundary Violation**: Cannot delete `{target_path}`. Operations attempting to access or delete files outside the safe workspace are strictly prohibited.",
+                                    "tool_calls": [{
+                                        "name": "delete_item",
+                                        "arguments": tool_input,
+                                        "status": "error",
+                                        "result": str(pe),
+                                    }],
+                                    "requires_confirmation": False,
+                                }
+                            except Exception:
+                                pass
+                        targets_list.append(target_display)
+                        delete_items.append({
+                            "tool": "delete_item",
                             "arguments": tool_input,
-                            "prompt": user_message,
-                        }
+                            "display": target_display,
+                        })
                         executed_tools.append({
-                            "name": tool_name,
+                            "name": "delete_item",
                             "arguments": tool_input,
                             "status": "pending_confirmation",
-                            "result": "Awaiting user confirmation before deleting...",
+                            "result": f"Awaiting user confirmation before deleting '{target_display}'...",
                         })
-                        return {
-                            "reply": f"⚠️ **Delete Confirmation Required**:\nAre you sure you want to permanently delete **`{target_path}`**? This action cannot be undone.",
-                            "requires_confirmation": True,
-                            "confirmation": {
-                                "id": conf_id,
-                                "action": "delete_item",
-                                "target": target_path,
-                                "details": f"Delete '{target_path}'" + (" (and all sub-items)" if tool_input.get("recursive") else ""),
-                            },
-                            "tool_calls": executed_tools,
-                        }
 
-                    # Execute non-destructive tool
+                    conf_id = f"conf_{uuid.uuid4().hex[:8]}"
+                    if len(targets_list) == 1:
+                        single_target = targets_list[0]
+                        reply_prompt = f"⚠️ **Delete Confirmation Required**:\nAre you sure you want to permanently delete **`{single_target}`**? This action cannot be undone."
+                        details_text = f"Delete '{single_target}'"
+                    else:
+                        formatted_targets = ", ".join(f"`{t}`" for t in targets_list)
+                        reply_prompt = f"⚠️ **Delete Confirmation Required**:\nAre you sure you want to permanently delete these {len(targets_list)} items: {formatted_targets}? This action cannot be undone."
+                        details_text = f"Delete {len(targets_list)} items: {', '.join(targets_list)}"
+
+                    PENDING_CONFIRMATIONS[conf_id] = {
+                        "tool": "batch_delete" if len(delete_items) > 1 else "delete_item",
+                        "items": delete_items,
+                        "display_target": ", ".join(targets_list),
+                        "prompt": user_message,
+                    }
+
+                    return {
+                        "reply": reply_prompt,
+                        "requires_confirmation": True,
+                        "confirmation": {
+                            "id": conf_id,
+                            "action": "delete_item",
+                            "target": ", ".join(targets_list),
+                            "details": details_text,
+                        },
+                        "tool_calls": executed_tools,
+                    }
+
+                # Non-destructive tools: Execute immediately
+                for fc in other_fcs:
+                    tool_name = fc.name
+                    tool_input = dict(fc.args) if fc.args else {}
                     result_str = await mcp_client_service.call_tool(tool_name, tool_input)
                     executed_tools.append({
                         "name": tool_name,
@@ -360,18 +477,90 @@ class LLMAgent:
 
                 # Send function results back to Gemini for next step or synthesis
                 if function_responses:
-                    response = chat.send_message(function_responses)
+                    response = await _send_with_retry(chat, function_responses)
                 else:
                     break
 
+            reply_text = response.text or "Operation completed successfully."
+
+            # Safety Net 1: Intercept path traversal deletion attempts (e.g. 'delete ..', 'rm ..', 'delete ../../README.md')
+            user_msg_lower = user_message.strip().lower()
+            is_delete_req = any(k in user_msg_lower for k in ["delete", "remove", "wipe", "clear", "erase", "destroy", "rm"])
+            user_words = [w.strip("',\"") for w in user_msg_lower.split()]
+            is_traversal_delete = any(w in ("..", "../", "../../") for w in user_words) or any(t in user_msg_lower for t in ["/etc/", "c:\\", "c:/", "../"])
+            if is_delete_req and is_traversal_delete:
+                return {
+                    "reply": "🛡️ **Security Boundary Violation**: Deleting files or directories outside the safe workspace sandbox (such as `..`) is strictly prohibited.",
+                    "tool_calls": [],
+                    "requires_confirmation": False,
+                }
+
+            # Safety Net 2: If the user requested to delete everything / all items / wipe workspace,
+            # but the model only listed items or outputted text asking for confirmation without invoking delete_item:
+            is_everything_req = any(k in user_msg_lower for k in ["everything", "all", "workspace", "workshop", "all files", "all folders"])
+            has_delete_tool = any(t.get("name") == "delete_item" for t in executed_tools)
+
+            if is_delete_req and not has_delete_tool and (is_everything_req or "confirm" in reply_text.lower() or "sure" in reply_text.lower()):
+                target_path = "everything" if is_everything_req else "item"
+                target_display = "everything in workspace" if is_everything_req else target_path
+                conf_id = f"conf_{uuid.uuid4().hex[:8]}"
+                PENDING_CONFIRMATIONS[conf_id] = {
+                    "tool": "delete_item",
+                    "arguments": {"path": target_path, "recursive": True},
+                    "prompt": user_message,
+                }
+                executed_tools.append({
+                    "name": "delete_item",
+                    "arguments": {"path": target_path, "recursive": True},
+                    "status": "pending_confirmation",
+                    "result": "Awaiting user confirmation before deleting...",
+                })
+                return {
+                    "reply": f"⚠️ **Delete Confirmation Required**:\nAre you sure you want to permanently delete **`{target_display}`**? This action cannot be undone.",
+                    "requires_confirmation": True,
+                    "confirmation": {
+                        "id": conf_id,
+                        "action": "delete_item",
+                        "target": target_display,
+                        "details": f"Delete '{target_display}' (and all contents)",
+                    },
+                    "tool_calls": executed_tools,
+                }
+
             return {
-                "reply": response.text or "Operation completed successfully.",
+                "reply": reply_text,
                 "tool_calls": executed_tools,
                 "requires_confirmation": False,
             }
 
         except Exception as e:
+            err_str = str(e)
             logger.error(f"Gemini API error: {e}", exc_info=True)
+            if "CONSUMER_SUSPENDED" in err_str:
+                return {
+                    "reply": (
+                        "❌ **Google Gemini API Key Suspended (403)**\n\n"
+                        "Google has suspended the project associated with this API key.\n\n"
+                        "**To fix this:**\n"
+                        "1. Go to [Google AI Studio](https://aistudio.google.com/app/apikey)\n"
+                        "2. Click **Create API key** and select **Create API key in NEW project**\n"
+                        "3. Paste the key into `.env` as `GEMINI_API_KEY=...`\n"
+                        "4. Send a new message — it will be loaded automatically!"
+                    ),
+                    "tool_calls": [],
+                    "requires_confirmation": False,
+                }
+            elif "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                return {
+                    "reply": (
+                        "⚠️ **Gemini Free Tier Quota Exceeded (429)**\n\n"
+                        "The rate limit for free tier requests was reached. "
+                        "Please wait a few seconds and send your request again! "
+                        "The app automatically uses `gemini-3.5-flash-lite` which has the highest available free quota."
+                    ),
+                    "tool_calls": [],
+                    "requires_confirmation": False,
+                }
             return {
                 "reply": f"❌ Error communicating with Google Gemini API: {str(e)}",
                 "tool_calls": [],
@@ -388,33 +577,46 @@ class LLMAgent:
                 "requires_confirmation": False,
             }
 
-        target = action_data["arguments"].get("path", "item")
+        items = action_data.get("items")
+        if not items:
+            items = [{"tool": action_data.get("tool", "delete_item"), "arguments": action_data.get("arguments", {})}]
+
+        target = action_data.get("display_target") or action_data.get("arguments", {}).get("path", "item")
 
         if not confirmed:
             return {
                 "reply": f"🛑 Deletion cancelled. **`{target}`** was not deleted.",
                 "tool_calls": [{
-                    "name": action_data["tool"],
-                    "arguments": action_data["arguments"],
+                    "name": item["tool"],
+                    "arguments": item["arguments"],
                     "status": "cancelled",
                     "result": "User cancelled deletion.",
-                }],
+                } for item in items],
                 "requires_confirmation": False,
             }
 
-        # User confirmed -> execute delete_item via MCP
-        result_str = await mcp_client_service.call_tool(
-            action_data["tool"], action_data["arguments"]
-        )
+        # User confirmed -> execute all items via MCP
+        executed_tools = []
+        result_messages = []
+        for item in items:
+            res_str = await mcp_client_service.call_tool(item["tool"], item["arguments"])
+            status = "success" if not res_str.startswith("Error") else "error"
+            executed_tools.append({
+                "name": item["tool"],
+                "arguments": item["arguments"],
+                "status": status,
+                "result": res_str,
+            })
+            result_messages.append(res_str)
+
+        if len(items) == 1:
+            reply_text = f"🗑️ Confirmed: {result_messages[0]}"
+        else:
+            reply_text = f"🗑️ Confirmed: Successfully processed {len(items)} deletions:\n" + "\n".join(f"- {msg}" for msg in result_messages)
 
         return {
-            "reply": f"🗑️ Confirmed: {result_str}",
-            "tool_calls": [{
-                "name": action_data["tool"],
-                "arguments": action_data["arguments"],
-                "status": "success" if not result_str.startswith("Error") else "error",
-                "result": result_str,
-            }],
+            "reply": reply_text,
+            "tool_calls": executed_tools,
             "requires_confirmation": False,
         }
 

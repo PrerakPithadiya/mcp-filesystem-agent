@@ -163,16 +163,34 @@ def update_file(file_path: str, content: str, mode: Literal["overwrite", "append
 @mcp.tool()
 def delete_item(path: str, recursive: bool = False) -> str:
     """Delete a file or folder from the safe workspace.
+    To delete all items or clear the workspace, use path='everything' or path='*'.
     NOTE: This action is permanent and should only be called after explicit user confirmation.
 
     Args:
-        path: Relative path of the file or folder to delete.
+        path: Relative path of the file or folder to delete, or 'everything' / '*' to delete all items.
         recursive: Required to be True when deleting a non-empty folder.
 
     Returns:
         Confirmation message.
     """
     try:
+        norm_path = str(path).strip().lower()
+        if norm_path in ("everything", "*", "all", "all items", "workspace", "workshop", "."):
+            workspace = get_default_workspace()
+            deleted_items = []
+            for item in list(workspace.iterdir()):
+                try:
+                    if item.is_dir():
+                        shutil.rmtree(item)
+                    else:
+                        item.unlink()
+                    deleted_items.append(item.name)
+                except Exception as ex:
+                    deleted_items.append(f"{item.name} (failed: {ex})")
+            if deleted_items:
+                return f"Successfully deleted all {len(deleted_items)} items in workspace: {', '.join(deleted_items)}"
+            return "Workspace is already empty."
+
         target = get_safe_path(path)
         if not target.exists():
             return f"Error: Path does not exist: '{path}'"
