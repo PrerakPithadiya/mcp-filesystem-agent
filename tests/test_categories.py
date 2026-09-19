@@ -18,7 +18,7 @@ from backend.llm_agent import LLMAgent, PENDING_CONFIRMATIONS
 from backend.mcp_client import mcp_client_service
 
 
-class BaseCategoryTest(unittest.TestCase):
+class BaseCategoryTest(unittest.IsolatedAsyncioTestCase):
     """Base class providing a clean isolated temporary workspace for each test case."""
 
     def setUp(self):
