@@ -39,7 +39,7 @@ def get_anthropic_api_key() -> str:
 
 def get_gemini_model() -> str:
     reload_env()
-    return os.environ.get("GEMINI_MODEL", "gemini-3.6-flash").strip()
+    return os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite").strip()
 
 def get_llm_provider() -> str:
     reload_env()
