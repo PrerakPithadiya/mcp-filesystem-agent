@@ -1,28 +1,42 @@
 import { useState, useEffect, useRef } from 'react';
 import {
-  Send,
-  Bot,
-  User,
-  ShieldCheck,
-  Cpu,
-  Sparkles,
   Loader2,
   Trash,
   FolderTree,
 } from 'lucide-react';
-import type { ChatMessage, FileNode, HealthInfo } from './types';
+import type { ChatMessage, FileNode, HealthInfo, ToolCall } from './types';
 import { ToolBadge } from './components/ToolBadge';
 import { ConfirmationPrompt } from './components/ConfirmationPrompt';
 import { WorkspaceTree } from './components/WorkspaceTree';
 
 const QUICK_ACTIONS = [
-  "Create a folder called Projects",
-  "Make a file called notes.txt with 'hello world' inside",
-  "Read the file notes.txt",
-  "Update notes.txt to say 'done'",
-  "Delete the file notes.txt",
-  "Try reading ../../PRD.md",
+  "create a folder Projects",
+  "make a file called notes.txt with 'hello world' inside",
+  "read notes.txt",
+  "update notes.txt to say 'done'",
+  "delete notes.txt",
+  "try reading ../../PRD.md",
 ];
+
+function extractAffectedPath(toolCalls?: ToolCall[]): string | null {
+  if (!toolCalls || toolCalls.length === 0) return null;
+  for (const t of toolCalls) {
+    const args = t.arguments || {};
+    const candidate =
+      args.folder_path ||
+      args.file_path ||
+      args.path ||
+      args.target_path ||
+      args.filename;
+    if (candidate && typeof candidate === 'string') {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+let messageCounter = 0;
+const createMessageId = (prefix: string) => `${prefix}_${Date.now()}_${++messageCounter}`;
 
 export function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -32,6 +46,7 @@ export function App() {
   const [tree, setTree] = useState<FileNode | null>(null);
   const [treeLoading, setTreeLoading] = useState(false);
   const [showMobileTree, setShowMobileTree] = useState(false);
+  const [highlightedPath, setHighlightedPath] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -43,21 +58,8 @@ export function App() {
     scrollToBottom();
   }, [messages, loading]);
 
-  const fetchHealth = async () => {
-    try {
-      const res = await fetch('/api/health');
-      if (res.ok) {
-        const data = await res.json();
-        setHealth(data);
-      }
-    } catch (e) {
-      console.error('Health check failed:', e);
-    }
-  };
-
   const fetchTree = async () => {
     try {
-      setTreeLoading(true);
       const res = await fetch('/api/workspace/tree');
       if (res.ok) {
         const data = await res.json();
@@ -71,7 +73,6 @@ export function App() {
   };
 
   const handleResetWorkspace = async () => {
-    if (!window.confirm('Reset workspace to default starter file?')) return;
     try {
       const res = await fetch('/api/workspace/reset', { method: 'POST' });
       if (res.ok) {
@@ -83,16 +84,49 @@ export function App() {
   };
 
   useEffect(() => {
-    fetchHealth();
-    fetchTree();
+    let active = true;
+
+    const checkHealthAndTree = () => {
+      fetch('/api/health')
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (active) setHealth(data);
+        })
+        .catch(() => {
+          if (active) setHealth(null);
+        });
+
+      fetch('/api/workspace/tree')
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (active && data) setTree(data);
+        })
+        .catch(() => {});
+    };
+
+    checkHealthAndTree();
+    const interval = setInterval(checkHealthAndTree, 5000);
+
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
   }, []);
+
+  const triggerGlow = (path: string | null) => {
+    if (!path) return;
+    setHighlightedPath(path);
+    setTimeout(() => {
+      setHighlightedPath((curr) => (curr === path ? null : curr));
+    }, 2400);
+  };
 
   const handleSendMessage = async (textToSend?: string) => {
     const text = (textToSend || input).trim();
     if (!text || loading) return;
 
     const userMessage: ChatMessage = {
-      id: `usr_${Date.now()}`,
+      id: createMessageId('usr'),
       role: 'user',
       content: text,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -120,7 +154,7 @@ export function App() {
       const data = await response.json();
 
       const assistantMessage: ChatMessage = {
-        id: `ast_${Date.now()}`,
+        id: createMessageId('ast'),
         role: 'assistant',
         content: data.reply || 'No response',
         toolCalls: data.tool_calls || [],
@@ -129,12 +163,26 @@ export function App() {
       };
 
       setMessages((prev) => [...prev, assistantMessage]);
+
+      const affected = extractAffectedPath(data.tool_calls);
+      if (affected) {
+        triggerGlow(affected);
+      }
       await fetchTree();
     } catch (err: any) {
+      const isConnectionError =
+        err.message?.includes('Failed to fetch') ||
+        err.message?.includes('NetworkError') ||
+        err.message?.includes('Network request failed');
+
+      const errorContent = isConnectionError
+        ? '❌ **Backend Connection Failed**: Unable to reach the backend at `http://127.0.0.1:8000`.\n\nPlease ensure your FastAPI backend is running with:\n```powershell\npython -m uvicorn backend.main:app --reload --port 8000\n```'
+        : `❌ Request error: ${err.message || 'Failed to connect to backend server'}`;
+
       const errorMessage: ChatMessage = {
-        id: `err_${Date.now()}`,
+        id: createMessageId('err'),
         role: 'assistant',
-        content: `❌ Request error: ${err.message || 'Failed to connect to backend server'}`,
+        content: errorContent,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       };
       setMessages((prev) => [...prev, errorMessage]);
@@ -153,13 +201,18 @@ export function App() {
       });
       const data = await res.json();
       const followUpMessage: ChatMessage = {
-        id: `ast_${Date.now()}`,
+        id: createMessageId('ast'),
         role: 'assistant',
         content: data.reply,
         toolCalls: data.tool_calls || [],
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       };
       setMessages((prev) => [...prev, followUpMessage]);
+
+      const affected = extractAffectedPath(data.tool_calls);
+      if (affected) {
+        triggerGlow(affected);
+      }
       await fetchTree();
     } catch (e: any) {
       console.error('Confirmation failed:', e);
@@ -178,13 +231,14 @@ export function App() {
       });
       const data = await res.json();
       const followUpMessage: ChatMessage = {
-        id: `ast_${Date.now()}`,
+        id: createMessageId('ast'),
         role: 'assistant',
         content: data.reply,
         toolCalls: data.tool_calls || [],
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       };
       setMessages((prev) => [...prev, followUpMessage]);
+      await fetchTree();
     } catch (e: any) {
       console.error('Cancel failed:', e);
     } finally {
@@ -193,124 +247,139 @@ export function App() {
   };
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-slate-950 text-slate-100">
-      {/* Main Chat Pane */}
-      <div className="flex flex-col flex-1 h-full min-w-0">
+    <div className="flex h-screen w-screen overflow-hidden bg-[#0F1419] text-[#EDEAE3] font-sans">
+      {/* Left Panel: Live File Tree */}
+      <aside
+        className={`w-72 lg:w-80 shrink-0 h-full fixed inset-y-0 left-0 z-30 lg:static transition-transform duration-200 ${
+          showMobileTree ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
+        }`}
+      >
+        <WorkspaceTree
+          tree={tree}
+          loading={treeLoading}
+          highlightedPath={highlightedPath}
+          onRefresh={fetchTree}
+          onReset={handleResetWorkspace}
+        />
+      </aside>
+
+      {/* Mobile Drawer Backdrop */}
+      {showMobileTree && (
+        <div
+          onClick={() => setShowMobileTree(false)}
+          className="fixed inset-0 bg-black/60 z-20 lg:hidden"
+        />
+      )}
+
+      {/* Right Panel: Chat Interface */}
+      <main className="flex flex-col flex-1 h-full min-w-0 bg-[#0F1419] shadow-[0_4px_30px_rgba(0,0,0,0.5)] z-10">
         {/* Top Header */}
-        <header className="h-16 border-b border-slate-800 px-6 flex items-center justify-between bg-slate-900/60 backdrop-blur shrink-0">
+        <header className="h-14 border-b border-[#262D38] px-5 flex items-center justify-between bg-[#161B22]/70 backdrop-blur shrink-0">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 to-cyan-500 flex items-center justify-center shadow-lg shadow-indigo-500/20">
-              <Cpu className="w-5 h-5 text-white" />
-            </div>
-            <div>
-              <h1 className="text-base font-bold tracking-tight text-white flex items-center gap-2">
-                MCP Filesystem Chatbot
-                <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-                  FastMCP Protocol
-                </span>
-              </h1>
-              <p className="text-xs text-slate-400">
-                Natural Language File Operations Powered by Google Gemini
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3">
-            {/* Status pill */}
-            <div className="hidden sm:flex items-center gap-2 text-xs bg-slate-800/80 border border-slate-700/60 px-3 py-1.5 rounded-full">
-              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-              <span className="text-slate-300">Sandbox:</span>
-              <span className="font-mono text-emerald-400 text-[11px]">mcp-workspace/</span>
-            </div>
-
-            {/* LLM indicator */}
-            {health && (
-              <div className="hidden md:flex items-center gap-2 text-xs bg-indigo-950/40 border border-indigo-800/40 px-3 py-1.5 rounded-full">
-                <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
-                <span className="text-indigo-200 capitalize font-medium">
-                  {health.provider}: {health.model}
-                </span>
-              </div>
-            )}
-
-            {/* Mobile Workspace Toggle */}
             <button
               onClick={() => setShowMobileTree(!showMobileTree)}
-              className="lg:hidden p-2 rounded-lg bg-slate-800 text-slate-300 hover:text-white"
-              title="Toggle File Tree"
+              className="lg:hidden p-1.5 rounded-md text-[#8B93A1] hover:text-[#EDEAE3] hover:bg-[#1C232C]"
+              title="Toggle Workspace"
             >
               <FolderTree className="w-4 h-4" />
             </button>
+            <h1 className="text-sm font-semibold text-[#EDEAE3] font-sans">
+              Chat with your files
+            </h1>
+          </div>
+
+          <div className="flex items-center gap-3 text-xs">
+            {/* Sandbox Status Indicator */}
+            <div className="flex items-center gap-1.5 text-[#8B93A1] font-mono">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#C9A659]" />
+              <span className="hidden sm:inline">sandbox:</span>
+              <span className="text-[#EDEAE3]">mcp-workspace/</span>
+            </div>
+
+            {/* Model Indicator */}
+            {health ? (
+              <div className="hidden md:flex items-center gap-1.5 text-[11px] text-[#8B93A1] font-mono border-l border-[#262D38] pl-3">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                <span className="capitalize">{health.provider}:</span>
+                <span className="text-[#EDEAE3]">{health.model}</span>
+              </div>
+            ) : (
+              <div className="hidden md:flex items-center gap-1.5 text-[11px] text-rose-400 font-mono border-l border-[#262D38] pl-3">
+                <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />
+                <span>Backend Offline</span>
+              </div>
+            )}
+
+            {/* Clear Conversation */}
+            {messages.length > 0 && (
+              <button
+                onClick={() => setMessages([])}
+                title="Clear Chat"
+                className="p-1.5 text-[#8B93A1] hover:text-[#EDEAE3] hover:bg-[#1C232C] rounded-md transition-colors"
+              >
+                <Trash className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
         </header>
 
-        {/* Chat Messages */}
-        <div className="flex-1 overflow-y-auto px-4 py-6 md:px-8 space-y-6">
+        {/* Conversation Stream */}
+        <div className="flex-1 overflow-y-auto px-4 py-6 md:px-8 space-y-4">
           {messages.length === 0 ? (
-            <div className="max-w-2xl mx-auto mt-8 text-center space-y-6">
-              <div className="w-16 h-16 mx-auto rounded-2xl bg-gradient-to-br from-indigo-500/20 to-purple-500/20 border border-indigo-500/30 flex items-center justify-center">
-                <Bot className="w-8 h-8 text-indigo-400" />
-              </div>
-              <div>
-                <h2 className="text-xl font-bold text-white">
-                  Welcome to AI Filesystem Manager
+            <div className="max-w-xl mx-auto my-auto py-16 px-4 text-center space-y-5">
+              <div className="space-y-1.5">
+                <h2 className="text-base font-semibold text-[#EDEAE3] font-sans">
+                  Chat with your files
                 </h2>
-                <p className="text-sm text-slate-400 mt-2 max-w-lg mx-auto">
-                  Type natural language requests below to create, read, update, or safely delete files.
-                  Gemini translates your intent into Model Context Protocol (MCP) tool calls!
+                <p className="text-xs text-[#8B93A1] max-w-md mx-auto leading-relaxed">
+                  Type natural language requests below to create, read, update, or safely delete files in the sandbox.
                 </p>
               </div>
 
-              {/* Quick Action Chips */}
               <div className="pt-2">
-                <p className="text-xs uppercase tracking-wider font-semibold text-slate-500 mb-3">
-                  Click a prompt to try it:
-                </p>
-                <div className="flex flex-wrap justify-center gap-2 max-w-xl mx-auto">
+                <div className="flex flex-wrap justify-center gap-2 max-w-md mx-auto">
                   {QUICK_ACTIONS.map((prompt) => (
                     <button
                       key={prompt}
                       onClick={() => handleSendMessage(prompt)}
-                      className="text-xs bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-slate-300 hover:text-white px-3.5 py-2 rounded-lg transition-all text-left shadow-sm flex items-center gap-1.5"
+                      className="text-xs font-mono bg-[#161B22] hover:bg-[#1C232C] border border-[#262D38] hover:border-[#C9A659]/50 text-[#8B93A1] hover:text-[#EDEAE3] px-3 py-1.5 rounded-md transition-colors text-left"
                     >
-                      <span>{prompt}</span>
+                      {prompt}
                     </button>
                   ))}
                 </div>
               </div>
             </div>
           ) : (
-            <div className="max-w-3xl mx-auto space-y-6">
+            <div className="max-w-3xl mx-auto space-y-4">
               {messages.map((msg) => (
                 <div
                   key={msg.id}
-                  className={`flex gap-3.5 ${
+                  className={`flex ${
                     msg.role === 'user' ? 'justify-end' : 'justify-start'
                   }`}
                 >
-                  {msg.role === 'assistant' && (
-                    <div className="w-8 h-8 rounded-lg bg-indigo-600/30 border border-indigo-500/40 flex items-center justify-center shrink-0 text-indigo-300 mt-1">
-                      <Bot className="w-4 h-4" />
-                    </div>
-                  )}
-
                   <div
-                    className={`max-w-[85%] rounded-2xl p-4 shadow-md ${
+                    className={`max-w-[90%] md:max-w-[85%] rounded-md p-3.5 border ${
                       msg.role === 'user'
-                        ? 'bg-indigo-600 text-white rounded-tr-none'
-                        : 'bg-slate-900/90 border border-slate-800 text-slate-200 rounded-tl-none'
+                        ? 'bg-[#161B22] border-[#262D38] text-[#EDEAE3]'
+                        : 'bg-[#161B22]/60 border-[#262D38]/80 text-[#EDEAE3]'
                     }`}
                   >
-                    <div className="text-sm leading-relaxed whitespace-pre-wrap">
+                    <div className="flex items-center justify-between gap-3 mb-1.5 pb-1 border-b border-[#262D38]/40 text-[11px] text-[#8B93A1] font-mono">
+                      <span className="font-sans font-medium text-[#EDEAE3]">
+                        {msg.role === 'user' ? 'You' : 'Assistant'}
+                      </span>
+                      <span>{msg.timestamp}</span>
+                    </div>
+
+                    <div className="text-xs md:text-sm leading-relaxed whitespace-pre-wrap">
                       {msg.content}
                     </div>
 
                     {/* Render MCP Tool Badges */}
                     {msg.toolCalls && msg.toolCalls.length > 0 && (
-                      <div className="mt-3 pt-3 border-t border-slate-800/80">
-                        <div className="text-[11px] uppercase tracking-wider font-semibold text-slate-500 mb-1 flex items-center gap-1">
-                          <Cpu className="w-3 h-3" /> MCP Tools Executed:
-                        </div>
+                      <div className="mt-2.5 pt-2 border-t border-[#262D38]/60 space-y-1">
                         {msg.toolCalls.map((tool, idx) => (
                           <ToolBadge key={idx} tool={tool} />
                         ))}
@@ -325,26 +394,14 @@ export function App() {
                         onCancel={handleCancel}
                       />
                     )}
-
-                    <div className="text-[10px] text-slate-500 mt-2 text-right">
-                      {msg.timestamp}
-                    </div>
                   </div>
-
-                  {msg.role === 'user' && (
-                    <div className="w-8 h-8 rounded-lg bg-slate-800 border border-slate-700 flex items-center justify-center shrink-0 text-slate-300 mt-1">
-                      <User className="w-4 h-4" />
-                    </div>
-                  )}
                 </div>
               ))}
 
               {loading && (
-                <div className="flex items-center gap-3 text-slate-400 text-sm italic">
-                  <div className="w-8 h-8 rounded-lg bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400">
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  </div>
-                  <span>Gemini is reasoning & calling MCP tools...</span>
+                <div className="flex items-center gap-2 text-[#8B93A1] text-xs font-mono py-2">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-[#C9A659]" />
+                  <span>Executing command...</span>
                 </div>
               )}
               <div ref={messagesEndRef} />
@@ -352,62 +409,39 @@ export function App() {
           )}
         </div>
 
-        {/* Input Bar */}
-        <div className="border-t border-slate-800 p-4 bg-slate-900/60 backdrop-blur shrink-0">
+        {/* Calm Command-Line Input Bar */}
+        <div className="border-t border-[#262D38] p-4 bg-[#161B22] shrink-0">
           <form
             onSubmit={(e) => {
               e.preventDefault();
               handleSendMessage();
             }}
-            className="max-w-3xl mx-auto flex items-center gap-2"
+            className="max-w-3xl mx-auto flex items-center gap-2.5 bg-[#0F1419] border border-[#262D38] rounded-md px-3.5 py-2.5 focus-within:border-[#C9A659] transition-colors"
           >
-            {messages.length > 0 && (
-              <button
-                type="button"
-                onClick={() => setMessages([])}
-                title="Clear Chat"
-                className="p-3 text-slate-500 hover:text-slate-300 hover:bg-slate-800 rounded-xl transition-colors"
-              >
-                <Trash className="w-4 h-4" />
-              </button>
-            )}
+            <span className="text-[#C9A659] font-mono text-sm font-semibold select-none">
+              &gt;
+            </span>
 
-            <div className="flex-1 relative">
-              <input
-                type="text"
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                placeholder="Ask Gemini to create, read, update, or delete files..."
-                disabled={loading}
-                className="w-full bg-slate-950 border border-slate-800 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 text-white rounded-xl px-4 py-3 text-sm placeholder-slate-500 pr-10"
-              />
-            </div>
+            <input
+              type="text"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="type a command..."
+              disabled={loading}
+              className="flex-1 bg-transparent border-0 focus:outline-none text-[#EDEAE3] font-mono text-xs md:text-sm placeholder-[#8B93A1]"
+            />
 
             <button
               type="submit"
               disabled={loading || !input.trim()}
-              className="px-4 py-3 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:hover:bg-indigo-600 text-white rounded-xl font-medium text-sm transition-all flex items-center gap-2 shadow-lg shadow-indigo-600/20 shrink-0"
+              className="px-2 py-1 text-[#8B93A1] hover:text-[#C9A659] disabled:opacity-30 disabled:hover:text-[#8B93A1] transition-colors font-mono text-xs flex items-center gap-1"
+              title="Send command"
             >
-              <span>Send</span>
-              <Send className="w-4 h-4" />
+              <span>➤</span>
             </button>
           </form>
         </div>
-      </div>
-
-      {/* Right Pane: Live Workspace Explorer */}
-      <div
-        className={`w-80 shrink-0 fixed inset-y-0 right-0 z-20 lg:static lg:block transition-transform duration-300 ${
-          showMobileTree ? 'translate-x-0' : 'translate-x-full lg:translate-x-0'
-        }`}
-      >
-        <WorkspaceTree
-          tree={tree}
-          loading={treeLoading}
-          onRefresh={fetchTree}
-          onReset={handleResetWorkspace}
-        />
-      </div>
+      </main>
     </div>
   );
 }
