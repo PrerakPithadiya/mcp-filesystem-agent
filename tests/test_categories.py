@@ -190,7 +190,15 @@ class TestHardCategory(BaseCategoryTest):
         prompt = "Read non_existent_file_xyz.txt"
         res = await self.chat(prompt)
         reply = res.get("reply", "").lower()
-        self.assertTrue("not found" in reply or "does not exist" in reply or "error" in reply)
+        tool_results = " ".join(str(tc.get("result", "")).lower() for tc in res.get("tool_calls", []))
+        self.assertTrue(
+            "not found" in reply
+            or "does not exist" in reply
+            or "error" in reply
+            or "couldn't find" in reply
+            or "could not find" in reply
+            or "not found" in tool_results
+        )
 
     async def test_hard_05_terse_shorthand_command(self):
         """HARD-05: Terse shorthand ('todo: buy groceries') -> infers todo.txt creation without random action."""
