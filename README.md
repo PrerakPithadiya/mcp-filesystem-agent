@@ -45,15 +45,23 @@ Open `.env` in the root folder and add your Google Gemini API key:
 GEMINI_API_KEY=AIzaSy...
 ```
 
-### 2. Start the Backend API (Terminal 1)
+### 2. Launch Servers
+
+**Option A (One-Click Launch on Windows):**
+Double-click `start_servers.bat` or run:
 ```powershell
-# In project root
+.\start_servers.bat
+```
+
+**Option B (Manual Launch):**
+*Terminal 1 (Backend):*
+```powershell
 .\venv\Scripts\activate
 uvicorn backend.main:app --reload --port 8000
 ```
 *Backend API will run at `http://127.0.0.1:8000` (API docs at `http://127.0.0.1:8000/docs`).*
 
-### 3. Start the Frontend (Terminal 2)
+*Terminal 2 (Frontend):*
 ```powershell
 cd frontend
 npm run dev
@@ -94,7 +102,12 @@ Here is the exact flow to record for your LinkedIn video showcase:
 
 ## 🧪 Running Automated Tests
 
-Run the full automated test suite (11 unit and integration tests):
+Run the core unit and integration test suite (31 tests):
 ```powershell
 .\venv\Scripts\python -m unittest discover tests
+```
+
+Run the comprehensive 120-prompt automated benchmark:
+```powershell
+.\venv\Scripts\python scripts/run_full_suite.py
 ```
