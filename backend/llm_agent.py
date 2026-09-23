@@ -13,6 +13,7 @@ import anthropic
 from backend import config
 from backend.diff_utils import compute_file_diff
 from backend.mcp_client import mcp_client_service
+from backend.offline_handler import handle_offline_request, is_network_error, parse_offline_intent
 from server.sandbox import get_safe_path
 
 logger = logging.getLogger("llm_agent")
@@ -138,6 +139,24 @@ class LLMAgent:
         self.anthropic_client: Optional[anthropic.AsyncAnthropic] = None
         if config.ANTHROPIC_API_KEY:
             self.anthropic_client = anthropic.AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
+
+    async def _send_gemini_message_with_retry(self, chat_obj: Any, msg_payload: Any, max_retries: int = 4) -> Any:
+        """Sends a message to Gemini chat with rate-limit and transient network glitch retries."""
+        for attempt in range(max_retries):
+            try:
+                return chat_obj.send_message(msg_payload)
+            except Exception as ex:
+                err_text = str(ex)
+                if ("429" in err_text or "RESOURCE_EXHAUSTED" in err_text or "503" in err_text) and attempt < max_retries - 1:
+                    backoff = 2.5 * (attempt + 1)
+                    logger.warning(f"Gemini API rate limit/busy ({err_text[:70]}...). Retrying in {backoff}s (attempt {attempt+1}/{max_retries})...")
+                    await asyncio.sleep(backoff)
+                    continue
+                elif is_network_error(ex) and attempt < 1:
+                    logger.warning(f"Transient network/DNS drop ({err_text[:70]}...). Retrying in 1.5s...")
+                    await asyncio.sleep(1.5)
+                    continue
+                raise ex
 
     async def chat(self, user_message: str, history: List[Dict[str, str]]) -> Dict[str, Any]:
         """
@@ -371,21 +390,6 @@ class LLMAgent:
                         )
                     )
 
-            import asyncio
-
-            async def _send_with_retry(chat_obj, msg_payload, max_retries=4):
-                for attempt in range(max_retries):
-                    try:
-                        return chat_obj.send_message(msg_payload)
-                    except Exception as ex:
-                        err_text = str(ex)
-                        if ("429" in err_text or "RESOURCE_EXHAUSTED" in err_text or "503" in err_text) and attempt < max_retries - 1:
-                            backoff = 2.5 * (attempt + 1)
-                            logger.warning(f"Gemini API rate limit/busy ({err_text[:70]}...). Retrying in {backoff}s (attempt {attempt+1}/{max_retries})...")
-                            await asyncio.sleep(backoff)
-                            continue
-                        raise ex
-
             candidate_models = [config.GEMINI_MODEL, "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.6-flash"]
             models_to_try = list(dict.fromkeys([m for m in candidate_models if m]))
             last_err = None
@@ -400,10 +404,14 @@ class LLMAgent:
                         ),
                         history=chat_history if chat_history else None,
                     )
-                    response = await _send_with_retry(chat, user_message)
+                    response = await self._send_gemini_message_with_retry(chat, user_message)
                     break
                 except Exception as e:
                     err_str = str(e)
+                    if is_network_error(e):
+                        logger.warning(f"Model {model_name} network error: {err_str[:80]}... Activating offline fallback.")
+                        last_err = e
+                        break
                     if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "503" in err_str or "404" in err_str:
                         logger.warning(f"Model {model_name} failed ({err_str[:80]}...); trying fallback.")
                         last_err = e
@@ -412,6 +420,9 @@ class LLMAgent:
             else:
                 if last_err:
                     raise last_err
+
+            if last_err and is_network_error(last_err):
+                raise last_err
             executed_tools: List[Dict[str, Any]] = []
 
             # Tool calling loop (up to 5 rounds)
@@ -524,11 +535,14 @@ class LLMAgent:
 
                 # Send function results back to Gemini for next step or synthesis
                 if function_responses:
-                    response = await _send_with_retry(chat, function_responses)
+                    response = await self._send_gemini_message_with_retry(chat, function_responses)
                 else:
                     break
 
-            reply_text = response.text or "Operation completed successfully."
+            try:
+                reply_text = response.text or "Operation completed successfully."
+            except (ValueError, AttributeError):
+                reply_text = "Operation completed successfully."
 
             # Safety Net 1: Intercept path traversal deletion attempts (e.g. 'delete ..', 'rm ..', 'delete ../../README.md')
             user_msg_lower = user_message.strip().lower()
@@ -581,6 +595,11 @@ class LLMAgent:
             }
 
         except Exception as e:
+            if is_network_error(e):
+                logger.warning(f"Network error communicating with Gemini API: {e}. Executing offline fallback.")
+                intent = parse_offline_intent(user_message, history)
+                return await handle_offline_request(intent, user_message, PENDING_CONFIRMATIONS)
+
             err_str = str(e)
             logger.error(f"Gemini API error: {e}", exc_info=True)
             if "CONSUMER_SUSPENDED" in err_str:
@@ -593,6 +612,20 @@ class LLMAgent:
                         "2. Click **Create API key** and select **Create API key in NEW project**\n"
                         "3. Paste the key into `.env` as `GEMINI_API_KEY=...`\n"
                         "4. Send a new message — it will be loaded automatically!"
+                    ),
+                    "tool_calls": [],
+                    "requires_confirmation": False,
+                }
+            elif "API_KEY_INVALID" in err_str or "API key not valid" in err_str or "PERMISSION_DENIED" in err_str:
+                return {
+                    "reply": (
+                        "❌ **Invalid Google Gemini API Key**\n\n"
+                        "The Gemini API key in your `.env` file is invalid or unauthorized.\n\n"
+                        "**To fix this:**\n"
+                        "1. Go to [Google AI Studio](https://aistudio.google.com/app/apikey)\n"
+                        "2. Copy a valid API key\n"
+                        "3. Update `.env` with `GEMINI_API_KEY=your_key_here`\n"
+                        "4. Send a new message — it will reload automatically!"
                     ),
                     "tool_calls": [],
                     "requires_confirmation": False,
@@ -752,19 +785,6 @@ class LLMAgent:
                         )
                     )
 
-            async def _send_with_retry(chat_obj, msg_payload, max_retries=4):
-                for attempt in range(max_retries):
-                    try:
-                        return chat_obj.send_message(msg_payload)
-                    except Exception as ex:
-                        err_text = str(ex)
-                        if ("429" in err_text or "RESOURCE_EXHAUSTED" in err_text or "503" in err_text) and attempt < max_retries - 1:
-                            backoff = 2.5 * (attempt + 1)
-                            logger.warning(f"Gemini API rate limit. Retrying in {backoff}s (attempt {attempt+1}/{max_retries})...")
-                            await asyncio.sleep(backoff)
-                            continue
-                        raise ex
-
             candidate_models = [config.GEMINI_MODEL, "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.6-flash"]
             models_to_try = list(dict.fromkeys([m for m in candidate_models if m]))
             chat = None
@@ -781,10 +801,14 @@ class LLMAgent:
                         ),
                         history=chat_history if chat_history else None,
                     )
-                    response = await _send_with_retry(chat, user_message)
+                    response = await self._send_gemini_message_with_retry(chat, user_message)
                     break
                 except Exception as e:
                     err_str = str(e)
+                    if is_network_error(e):
+                        logger.warning(f"Model {model_name} network error in stream: {err_str[:80]}... Activating offline fallback.")
+                        last_err = e
+                        break
                     if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "503" in err_str or "404" in err_str:
                         logger.warning(f"Model {model_name} failed: {err_str[:80]}... Trying fallback.")
                         last_err = e
@@ -792,8 +816,13 @@ class LLMAgent:
                     raise e
             else:
                 if last_err:
+                    if is_network_error(last_err):
+                        raise last_err
                     yield f"event: error\ndata: {json.dumps({'error': str(last_err)})}\n\n"
                     return
+
+            if last_err and is_network_error(last_err):
+                raise last_err
 
             executed_tools: List[Dict[str, Any]] = []
             max_rounds = 5
@@ -886,11 +915,14 @@ class LLMAgent:
                     )
 
                 if function_responses:
-                    response = await _send_with_retry(chat, function_responses)
+                    response = await self._send_gemini_message_with_retry(chat, function_responses)
                 else:
                     break
 
-            reply_text = response.text or "Operation completed successfully."
+            try:
+                reply_text = response.text or "Operation completed successfully."
+            except (ValueError, AttributeError):
+                reply_text = "Operation completed successfully."
 
             # Safety Net 1: Intercept path traversal deletion attempts
             user_msg_lower = user_message.strip().lower()
@@ -943,8 +975,44 @@ class LLMAgent:
             yield f"event: done\ndata: {json.dumps({'reply': reply_text, 'tool_calls': executed_tools, 'affected_path': affected_path, 'requires_confirmation': False})}\n\n"
 
         except Exception as e:
+            if is_network_error(e):
+                logger.warning(f"Network error in _chat_gemini_stream: {e}. Executing offline fallback stream.")
+                intent = parse_offline_intent(user_message, history)
+                offline_res = await handle_offline_request(intent, user_message, PENDING_CONFIRMATIONS)
+
+                if offline_res.get("requires_confirmation"):
+                    yield f"event: confirmation_required\ndata: {json.dumps(offline_res)}\n\n"
+                    return
+
+                executed_tools = offline_res.get("tool_calls", [])
+                if executed_tools:
+                    yield f"event: status\ndata: {json.dumps({'stage': 'calling_tools', 'message': f'Executing {len(executed_tools)} local tool(s) offline...'})}\n\n"
+                    for tc in executed_tools:
+                        yield f"event: tool_start\ndata: {json.dumps({'name': tc['name'], 'arguments': tc['arguments']})}\n\n"
+                        yield f"event: tool_end\ndata: {json.dumps(tc)}\n\n"
+
+                reply_text = offline_res.get("reply", "")
+                yield f"event: status\ndata: {json.dumps({'stage': 'generating', 'message': 'Generating response...'})}\n\n"
+                words = reply_text.split(" ")
+                for i, word in enumerate(words):
+                    token_str = word + (" " if i < len(words) - 1 else "")
+                    yield f"event: token\ndata: {json.dumps({'delta': token_str})}\n\n"
+                    await asyncio.sleep(0.01)
+
+                yield f"event: done\ndata: {json.dumps(offline_res)}\n\n"
+                return
+
+            err_str = str(e)
             logger.error(f"Error in _chat_gemini_stream: {e}", exc_info=True)
-            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+            if "CONSUMER_SUSPENDED" in err_str:
+                err_msg = "Google Gemini API Key Suspended (403). Please generate a new key at https://aistudio.google.com/app/apikey and update .env."
+            elif "API_KEY_INVALID" in err_str or "API key not valid" in err_str or "PERMISSION_DENIED" in err_str:
+                err_msg = "Invalid Google Gemini API Key. Please verify your GEMINI_API_KEY in .env."
+            elif "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                err_msg = "Gemini Free Tier Quota Exceeded (429). Please wait a few seconds and try again."
+            else:
+                err_msg = str(e)
+            yield f"event: error\ndata: {json.dumps({'error': err_msg})}\n\n"
 
 
 llm_agent = LLMAgent()

@@ -6,7 +6,7 @@ An interactive, full-stack AI filesystem chatbot powered by Google Gemini and th
 
 ## Commands
 
-- test: `.\venv\Scripts\python -m unittest discover tests`
+- test: `.\venv\Scripts\python -m unittest tests/test_bulletproof_scenarios.py tests/test_server.py tests/test_diff_utils.py tests/test_offline_fallback.py tests/test_backend.py`
 - benchmark: `.\venv\Scripts\python scripts/run_full_suite.py`
 - build: `cd frontend && npm run build`
 - dev-backend: `.\venv\Scripts\activate && uvicorn backend.main:app --reload --port 8000`
@@ -24,6 +24,7 @@ An interactive, full-stack AI filesystem chatbot powered by Google Gemini and th
 - [x] done: Initialize autonomous git workflow and project state tracker (merged 2026-09-19)
 - [x] done: Direct Windows Desktop workspace support with system file protection and dynamic UI sync (2026-09-23)
 - [x] done: Real-time SSE token streaming, agent step badges, visual file diff & code preview modal (merged 2026-09-23)
+- [x] done: Comprehensive error-proofing, edge-case hardening & proactive resilience (50 tests passing, 2026-09-24)
 - [ ] todo: Session persistence across page reloads (chat history & state caching)
 
 ## Active branches
@@ -32,6 +33,7 @@ An interactive, full-stack AI filesystem chatbot powered by Google Gemini and th
 
 ## Decisions
 
+- 2026-09-24 | Bulletproof Hardening & Proactive Resilience | Hardened path sanitization, tool argument aliasing normalization, null-byte binary and huge file safety, safe response text extraction, offline pronoun resolution, and frontend network error interception.
 - 2026-09-23 | Real-time SSE Streaming & Visual File Diffs | Implemented /api/chat/stream SSE pipeline with live agent lifecycle stages, diff computation via Python difflib, and full code preview modal.
 - 2026-09-23 | Option A: Windows Desktop Workspace via WORKSPACE_DIR | Enables direct Windows Desktop CRUD operations with protected system file exclusions (desktop.ini) and UI dynamic workspace sync.
 - 2026-09-19 | Adopt autonomous git workflow rule (`autonomous-git-workflow.md`) | Streamlines solo development with automated branch creation, testing gates, and seamless merges into `main`.
@@ -44,4 +46,4 @@ An interactive, full-stack AI filesystem chatbot powered by Google Gemini and th
 
 ## Known issues / follow-ups
 
-- Explore Server-Sent Events (SSE) to stream Gemini text tokens rather than waiting for full turn completion.
+(None)

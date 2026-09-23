@@ -88,8 +88,24 @@ def read_file(file_path: str) -> str:
         if not target.is_file():
             return f"Error: '{file_path}' is a directory, not a file."
 
-        content = target.read_text(encoding="utf-8")
-        return content
+        file_size = target.stat().st_size
+        max_preview_bytes = 250_000
+
+        try:
+            # Check for binary file by reading a header chunk
+            with target.open("rb") as bf:
+                chunk = bf.read(1024)
+                if b"\x00" in chunk:
+                    return f"Error: '{file_path}' is a binary file and cannot be read as plain text."
+
+            if file_size > max_preview_bytes:
+                with target.open("r", encoding="utf-8", errors="replace") as f:
+                    content = f.read(max_preview_bytes)
+                return content + f"\n\n... [Content truncated: file size is {file_size:,} bytes, showing first {max_preview_bytes:,} bytes]"
+            else:
+                return target.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            return f"Error: '{file_path}' is a binary file and cannot be read as plain text."
     except Exception as e:
         return f"Failed to read file '{file_path}': {str(e)}"
 

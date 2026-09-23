@@ -49,13 +49,13 @@ export const CodePreviewModal = ({
         onClick={(e) => e.stopPropagation()}
       >
         {/* Modal Header */}
-        <div className="h-14 px-5 border-b border-[#262D38] flex items-center justify-between shrink-0 bg-[#0F1419]">
-          <div className="flex items-center gap-2.5 min-w-0 pr-4">
+        <div className="min-h-14 px-5 border-b border-[#262D38] flex flex-wrap items-center gap-3 shrink-0 bg-[#0F1419] py-3">
+          <div className="flex items-center gap-2.5 min-w-0 flex-1">
             <FileText className="w-4 h-4 text-[#C9A659] shrink-0" />
             <span className="font-mono text-xs font-medium text-[#EDEAE3] truncate">
               {filePath}
             </span>
-            <span className="text-[11px] font-mono text-[#8B93A1] bg-[#161B22] px-2 py-0.5 rounded border border-[#262D38] shrink-0">
+            <span className="text-[11px] font-mono text-[#8B93A1] bg-[#161B22] px-2 py-0.5 rounded border border-[#262D38] shrink-0 ml-2">
               {lines.length} {lines.length === 1 ? 'line' : 'lines'}
             </span>
           </div>
