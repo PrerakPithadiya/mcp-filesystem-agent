@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
 import {
-  Loader2,
   Trash,
   FolderTree,
 } from 'lucide-react';
@@ -8,6 +7,7 @@ import type { ChatMessage, FileNode, HealthInfo, ToolCall } from './types';
 import { ToolBadge } from './components/ToolBadge';
 import { ConfirmationPrompt } from './components/ConfirmationPrompt';
 import { WorkspaceTree } from './components/WorkspaceTree';
+import { AgentStepIndicator } from './components/AgentStepIndicator';
 
 const QUICK_ACTIONS = [
   "create a folder Projects",
@@ -132,7 +132,19 @@ export function App() {
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
 
-    setMessages((prev) => [...prev, userMessage]);
+    const assistantMsgId = createMessageId('ast');
+    const initialAssistantMsg: ChatMessage = {
+      id: assistantMsgId,
+      role: 'assistant',
+      content: '',
+      toolCalls: [],
+      isStreaming: true,
+      currentStage: 'thinking',
+      stageMessage: 'Analyzing intent...',
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    };
+
+    setMessages((prev) => [...prev, userMessage, initialAssistantMsg]);
     setInput('');
     setLoading(true);
 
@@ -142,7 +154,7 @@ export function App() {
         content: m.content,
       }));
 
-      const response = await fetch('/api/chat', {
+      const response = await fetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -151,23 +163,140 @@ export function App() {
         }),
       });
 
-      const data = await response.json();
-
-      const assistantMessage: ChatMessage = {
-        id: createMessageId('ast'),
-        role: 'assistant',
-        content: data.reply || 'No response',
-        toolCalls: data.tool_calls || [],
-        confirmation: data.confirmation || undefined,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      };
-
-      setMessages((prev) => [...prev, assistantMessage]);
-
-      const affected = extractAffectedPath(data.tool_calls);
-      if (affected) {
-        triggerGlow(affected);
+      if (!response.ok) {
+        throw new Error(`Server returned HTTP ${response.status}`);
       }
+
+      if (!response.body) {
+        throw new Error('Response body stream is unavailable');
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop() || '';
+
+        for (const part of parts) {
+          if (!part.trim()) continue;
+          let eventType = 'message';
+          let dataStr = '';
+
+          for (const line of part.split('\n')) {
+            if (line.startsWith('event: ')) {
+              eventType = line.slice(7).trim();
+            } else if (line.startsWith('data: ')) {
+              dataStr = line.slice(6).trim();
+            }
+          }
+
+          if (!dataStr) continue;
+
+          try {
+            const data = JSON.parse(dataStr);
+
+            setMessages((prev) =>
+              prev.map((msg) => {
+                if (msg.id !== assistantMsgId) return msg;
+
+                if (eventType === 'status') {
+                  return {
+                    ...msg,
+                    currentStage: data.stage,
+                    stageMessage: data.message,
+                  };
+                }
+
+                if (eventType === 'tool_start') {
+                  const existing = msg.toolCalls || [];
+                  return {
+                    ...msg,
+                    activeToolName: data.name,
+                    toolCalls: [
+                      ...existing,
+                      {
+                        name: data.name,
+                        arguments: data.arguments || {},
+                        status: 'pending_confirmation',
+                        result: 'Executing...',
+                      },
+                    ],
+                  };
+                }
+
+                if (eventType === 'tool_end') {
+                  const existing = msg.toolCalls || [];
+                  const lastIdx = existing.map((t) => t.name).lastIndexOf(data.name);
+                  const updated = [...existing];
+                  if (lastIdx !== -1) {
+                    updated[lastIdx] = data;
+                  } else {
+                    updated.push(data);
+                  }
+                  return {
+                    ...msg,
+                    activeToolName: null,
+                    toolCalls: updated,
+                  };
+                }
+
+                if (eventType === 'token') {
+                  return {
+                    ...msg,
+                    content: msg.content + (data.delta || ''),
+                  };
+                }
+
+                if (eventType === 'confirmation_required') {
+                  return {
+                    ...msg,
+                    isStreaming: false,
+                    content: data.reply || msg.content,
+                    confirmation: data.confirmation,
+                    toolCalls: data.tool_calls || msg.toolCalls,
+                  };
+                }
+
+                if (eventType === 'done') {
+                  return {
+                    ...msg,
+                    isStreaming: false,
+                    content: data.reply || msg.content,
+                    toolCalls: data.tool_calls || msg.toolCalls,
+                  };
+                }
+
+                if (eventType === 'error') {
+                  return {
+                    ...msg,
+                    isStreaming: false,
+                    content: `❌ ${data.error || 'Unknown error occurred'}`,
+                  };
+                }
+
+                return msg;
+              })
+            );
+
+            if (eventType === 'done' && data.affected_path) {
+              triggerGlow(data.affected_path);
+              fetchTree();
+            }
+            if (eventType === 'tool_end') {
+              fetchTree();
+            }
+          } catch (e) {
+            console.error('Failed to parse SSE payload:', e);
+          }
+        }
+      }
+
       await fetchTree();
     } catch (err: any) {
       const isConnectionError =
@@ -179,13 +308,13 @@ export function App() {
         ? '❌ **Backend Connection Failed**: Unable to reach the backend at `http://127.0.0.1:8000`.\n\nPlease ensure your FastAPI backend is running with:\n```powershell\npython -m uvicorn backend.main:app --reload --port 8000\n```'
         : `❌ Request error: ${err.message || 'Failed to connect to backend server'}`;
 
-      const errorMessage: ChatMessage = {
-        id: createMessageId('err'),
-        role: 'assistant',
-        content: errorContent,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      };
-      setMessages((prev) => [...prev, errorMessage]);
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === assistantMsgId
+            ? { ...msg, isStreaming: false, content: errorContent }
+            : msg
+        )
+      );
     } finally {
       setLoading(false);
     }
@@ -373,18 +502,30 @@ export function App() {
                       <span>{msg.timestamp}</span>
                     </div>
 
-                    <div className="text-xs md:text-sm leading-relaxed whitespace-pre-wrap">
-                      {msg.content}
-                    </div>
+                    {/* Render Agent Step Indicator while streaming */}
+                    {msg.isStreaming && (
+                      <AgentStepIndicator
+                        stage={msg.currentStage}
+                        message={msg.stageMessage}
+                        activeToolName={msg.activeToolName}
+                      />
+                    )}
 
                     {/* Render MCP Tool Badges */}
                     {msg.toolCalls && msg.toolCalls.length > 0 && (
-                      <div className="mt-2.5 pt-2 border-t border-[#262D38]/60 space-y-1">
+                      <div className="my-2 space-y-1">
                         {msg.toolCalls.map((tool, idx) => (
                           <ToolBadge key={idx} tool={tool} />
                         ))}
                       </div>
                     )}
+
+                    <div className="text-xs md:text-sm leading-relaxed whitespace-pre-wrap">
+                      {msg.content}
+                      {msg.isStreaming && msg.content.length > 0 && (
+                        <span className="inline-block w-1.5 h-3.5 bg-[#C9A659] ml-0.5 animate-pulse align-middle" />
+                      )}
+                    </div>
 
                     {/* Render Interactive Confirmation Card */}
                     {msg.confirmation && (
@@ -398,12 +539,6 @@ export function App() {
                 </div>
               ))}
 
-              {loading && (
-                <div className="flex items-center gap-2 text-[#8B93A1] text-xs font-mono py-2">
-                  <Loader2 className="w-3.5 h-3.5 animate-spin text-[#C9A659]" />
-                  <span>Executing command...</span>
-                </div>
-              )}
               <div ref={messagesEndRef} />
             </div>
           )}
