@@ -50,10 +50,19 @@ def get_safe_path(user_path: str, workspace_root: Optional[Path] = None) -> Path
         workspace_root = workspace_root.resolve()
         workspace_root.mkdir(parents=True, exist_ok=True)
 
-    raw_str = str(user_path).strip()
+    raw_str = str(user_path).strip().strip("'\"")
+    if not raw_str:
+        raise ValueError("Path cannot be empty.")
+
+    # Check for invalid Windows path characters in relative components (colon only allowed for drive letter at pos 1)
+    is_win_drive = len(raw_str) > 1 and raw_str[1] == ":" and raw_str[0].isalpha()
+    check_str = raw_str[2:] if is_win_drive else raw_str
+    invalid_chars = set('<>"|?*')
+    if any(c in invalid_chars for c in check_str) or (not is_win_drive and ":" in raw_str):
+        raise ValueError(f"Invalid characters in path '{user_path}'. Paths cannot contain < > : \" | ? *")
 
     # Check if the user specified an absolute path (POSIX root /..., Windows drive C:\..., or UNC \\...)
-    if raw_str.startswith(("/", "\\")) or (len(raw_str) > 1 and raw_str[1] == ":"):
+    if raw_str.startswith(("/", "\\")) or is_win_drive:
         try:
             target_path = Path(raw_str).resolve()
             target_path.relative_to(workspace_root)

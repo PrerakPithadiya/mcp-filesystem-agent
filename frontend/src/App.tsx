@@ -2,6 +2,8 @@ import { useState, useEffect, useRef } from 'react';
 import {
   Trash,
   FolderTree,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import type { ChatMessage, FileNode, HealthInfo, ToolCall } from './types';
 import { ToolBadge } from './components/ToolBadge';
@@ -47,6 +49,8 @@ export function App() {
   const [treeLoading, setTreeLoading] = useState(false);
   const [showMobileTree, setShowMobileTree] = useState(false);
   const [highlightedPath, setHighlightedPath] = useState<string | null>(null);
+  const [sidebarWidth, setSidebarWidth] = useState(288); // 72 * 4 = 288px (w-72)
+  const [isResizing, setIsResizing] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -164,7 +168,14 @@ export function App() {
       });
 
       if (!response.ok) {
-        throw new Error(`Server returned HTTP ${response.status}`);
+        let errDetail = `Server returned HTTP ${response.status}`;
+        try {
+          const errJson = await response.json();
+          if (errJson.detail) errDetail = errJson.detail;
+        } catch {
+          // ignore
+        }
+        throw new Error(errDetail);
       }
 
       if (!response.body) {
@@ -273,10 +284,23 @@ export function App() {
                 }
 
                 if (eventType === 'error') {
+                  const rawError = data.error || 'Unknown error occurred';
+                  let formattedError = `❌ ${rawError}`;
+                  const isDnsOrNetwork =
+                    rawError.includes('11001') ||
+                    rawError.toLowerCase().includes('getaddrinfo') ||
+                    rawError.toLowerCase().includes('nameresolutionerror') ||
+                    rawError.toLowerCase().includes('network is unreachable') ||
+                    rawError.toLowerCase().includes('connection refused');
+
+                  if (isDnsOrNetwork) {
+                    formattedError = `🌐 **Network / DNS Connection Offline**\n\nUnable to connect to Google Gemini API (\`${rawError}\`).\n\n**Suggestions:**\n- Check your internet connection or Wi-Fi.\n- Common filesystem commands (*create folder*, *read file*, *list files*, *delete*) work offline locally via MCP.\n- Conversational AI will resume automatically once connected.`;
+                  }
+
                   return {
                     ...msg,
                     isStreaming: false,
-                    content: `❌ ${data.error || 'Unknown error occurred'}`,
+                    content: formattedError,
                   };
                 }
 
@@ -375,13 +399,44 @@ export function App() {
     }
   };
 
+  const handleMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsResizing(true);
+  };
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isResizing) return;
+      const newWidth = e.clientX;
+      // Constrain width between 200px and 600px
+      if (newWidth >= 200 && newWidth <= 600) {
+        setSidebarWidth(newWidth);
+      }
+    };
+
+    const handleMouseUp = () => {
+      setIsResizing(false);
+    };
+
+    if (isResizing) {
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+    }
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isResizing]);
+
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[#0F1419] text-[#EDEAE3] font-sans">
       {/* Left Panel: Live File Tree */}
       <aside
-        className={`w-72 lg:w-80 shrink-0 h-full fixed inset-y-0 left-0 z-30 lg:static transition-transform duration-200 ${
+        className={`shrink-0 h-full fixed inset-y-0 left-0 z-30 lg:static transition-transform duration-200 relative ${
           showMobileTree ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
         }`}
+        style={{ width: sidebarWidth }}
       >
         <WorkspaceTree
           tree={tree}
@@ -390,7 +445,34 @@ export function App() {
           onRefresh={fetchTree}
           onReset={handleResetWorkspace}
         />
+
+        {/* Fixed Resize Controls at Sidebar Edge */}
+        <div className="hidden lg:flex absolute right-0 top-4 flex-col gap-1 bg-[#161B22] border border-[#262D38] rounded-md p-1 shadow-lg">
+          <button
+            onClick={() => setSidebarWidth(Math.max(200, sidebarWidth - 20))}
+            className="p-1.5 rounded-md text-[#8B93A1] hover:text-[#EDEAE3] hover:bg-[#1C232C] transition-colors"
+            title="Decrease sidebar width"
+          >
+            <ChevronLeft className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={() => setSidebarWidth(Math.min(600, sidebarWidth + 20))}
+            className="p-1.5 rounded-md text-[#8B93A1] hover:text-[#EDEAE3] hover:bg-[#1C232C] transition-colors"
+            title="Increase sidebar width"
+          >
+            <ChevronRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
       </aside>
+
+      {/* Resize Handle */}
+      <div
+        className={`hidden lg:block w-1 hover:w-2 bg-[#262D38] hover:bg-[#C9A659] cursor-col-resize transition-all duration-150 shrink-0 ${
+          isResizing ? 'w-2 bg-[#C9A659]' : ''
+        }`}
+        onMouseDown={handleMouseDown}
+        title="Drag to resize sidebar"
+      />
 
       {/* Mobile Drawer Backdrop */}
       {showMobileTree && (

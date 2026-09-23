@@ -159,13 +159,45 @@ async def get_workspace_tree():
 async def get_file_content(path: str):
     """
     Returns the content of a file in the workspace for preview in the UI.
+    Safely handles binary files and limits preview size to prevent UI hangs.
     """
     try:
         safe = get_safe_path(path)
         if not safe.exists() or not safe.is_file():
             raise HTTPException(status_code=404, detail="File not found")
-        content = safe.read_text(encoding="utf-8")
-        return {"path": path, "content": content, "size": safe.stat().st_size}
+
+        file_size = safe.stat().st_size
+        # Check for binary file
+        try:
+            with safe.open("rb") as bf:
+                chunk = bf.read(1024)
+                if b"\x00" in chunk:
+                    return {
+                        "path": path,
+                        "content": "[Binary file - preview not available as plain text]",
+                        "size": file_size,
+                        "is_binary": True,
+                    }
+        except Exception:
+            pass
+
+        max_preview = 250_000
+        if file_size > max_preview:
+            with safe.open("r", encoding="utf-8", errors="replace") as f:
+                content = f.read(max_preview)
+            content += f"\n\n... [Content truncated: file size is {file_size:,} bytes, showing first {max_preview:,} bytes]"
+        else:
+            try:
+                content = safe.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                return {
+                    "path": path,
+                    "content": "[Binary file - preview not available as plain text]",
+                    "size": file_size,
+                    "is_binary": True,
+                }
+
+        return {"path": path, "content": content, "size": file_size, "is_binary": False}
     except PermissionError as pe:
         raise HTTPException(status_code=403, detail=str(pe))
     except HTTPException:
@@ -178,14 +210,20 @@ async def get_file_content(path: str):
 async def reset_workspace():
     """
     Resets the workspace with sample demo files for demonstration.
+    Preserves protected system files such as desktop.ini.
     """
     workspace = get_default_workspace()
     import shutil
     for item in workspace.iterdir():
-        if item.is_dir():
-            shutil.rmtree(item)
-        else:
-            item.unlink()
+        if item.name.lower() in PROTECTED_SYSTEM_NAMES:
+            continue
+        try:
+            if item.is_dir():
+                shutil.rmtree(item)
+            else:
+                item.unlink()
+        except Exception:
+            pass
 
     # Create a nice sample file
     sample = workspace / "welcome.txt"

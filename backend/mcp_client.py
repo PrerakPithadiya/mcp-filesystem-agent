@@ -19,6 +19,71 @@ logger = logging.getLogger("mcp_client")
 logging.basicConfig(level=logging.INFO)
 
 
+def normalize_tool_arguments(tool_name: str, arguments: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Normalizes parameter aliases and sanitizes inputs from various LLM models:
+    - create_folder: accepts folder_path, path, folder, name, directory
+    - create_file / read_file: accepts file_path, path, filename, file, name; content or text
+    - update_file: accepts file_path, path, filename; content or text; mode
+    - list_folder: accepts folder_path, path, directory, folder (defaults to "")
+    - delete_item: accepts path, file_path, folder_path, target, item, name
+    Strips leading and trailing quotes and whitespace from string values.
+    """
+    if not isinstance(arguments, dict):
+        args = {}
+    else:
+        args = dict(arguments)
+
+    # Clean string values: strip whitespace and outer matching quotes
+    for k, v in list(args.items()):
+        if isinstance(v, str):
+            args[k] = v.strip().strip("'\"")
+
+    if tool_name == "create_folder":
+        if "folder_path" not in args or not args["folder_path"]:
+            for alias in ["path", "folder", "name", "directory"]:
+                if alias in args and args[alias]:
+                    args["folder_path"] = args.pop(alias)
+                    break
+    elif tool_name in ("create_file", "read_file"):
+        if "file_path" not in args or not args["file_path"]:
+            for alias in ["path", "filename", "file", "name"]:
+                if alias in args and args[alias]:
+                    args["file_path"] = args.pop(alias)
+                    break
+        if tool_name == "create_file":
+            if "content" not in args and "text" in args:
+                args["content"] = args.pop("text")
+            elif "content" not in args:
+                args["content"] = ""
+    elif tool_name == "update_file":
+        if "file_path" not in args or not args["file_path"]:
+            for alias in ["path", "filename", "file", "name"]:
+                if alias in args and args[alias]:
+                    args["file_path"] = args.pop(alias)
+                    break
+        if "content" not in args and "text" in args:
+            args["content"] = args.pop("text")
+        if "mode" not in args:
+            args["mode"] = "overwrite"
+    elif tool_name == "list_folder":
+        if "folder_path" not in args:
+            for alias in ["path", "directory", "folder"]:
+                if alias in args:
+                    args["folder_path"] = args.pop(alias)
+                    break
+        if "folder_path" not in args or args["folder_path"] is None:
+            args["folder_path"] = ""
+    elif tool_name == "delete_item":
+        if "path" not in args or not args["path"]:
+            for alias in ["file_path", "folder_path", "target", "item", "name"]:
+                if alias in args and args[alias]:
+                    args["path"] = args.pop(alias)
+                    break
+
+    return args
+
+
 class MCPClientService:
     def __init__(self, workspace_path: Optional[Path] = None):
         self._workspace_path = workspace_path
@@ -96,6 +161,7 @@ class MCPClientService:
 
     async def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> str:
         """Calls a tool on the MCP server. Tries stdio first, falls back gracefully if needed."""
+        arguments = normalize_tool_arguments(tool_name, arguments)
         async with self._lock:
             try:
                 # Add 5s timeout on stdio subprocess to avoid hanging on Windows
