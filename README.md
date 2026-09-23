@@ -107,7 +107,6 @@ Never lose access to your local workspace due to network drops or DNS issues:
 
 ---
 
-
 ## 🧪 Running Automated Tests
 
 Run the full core unit and integration test suite (81+ tests covering performance, desktop workspace, server, backend, diffs, offline fallback, and bulletproof edge-case scenarios):

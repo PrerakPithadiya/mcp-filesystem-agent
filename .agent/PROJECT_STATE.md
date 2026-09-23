@@ -34,6 +34,7 @@ An interactive, full-stack AI filesystem chatbot powered by Google Gemini and th
 
 ## Decisions
 
+- 2026-09-24 | Purge demo showcase flow section from README.md and git history | User directive; rewrote repository history via git-filter-repo and force-pushed to origin main.
 - 2026-09-24 | High-Performance Engine & Latency Optimization | Made direct in-process FastMCP execution primary (10-15ms vs 1.4s subprocess per tool call), switched default model to gemini-3.1-flash-lite (2.1s response), reduced rate-limit retry backoff from 25s to 0.3-0.8s with immediate model fallback, optimized SSE streaming pacing, and added top-level GenAI caching.
 - 2026-09-24 | Bulletproof Hardening & Proactive Resilience | Hardened path sanitization, tool argument aliasing normalization, null-byte binary and huge file safety, safe response text extraction, offline pronoun resolution, and frontend network error interception.
 - 2026-09-23 | Real-time SSE Streaming & Visual File Diffs | Implemented /api/chat/stream SSE pipeline with live agent lifecycle stages, diff computation via Python difflib, and full code preview modal.
