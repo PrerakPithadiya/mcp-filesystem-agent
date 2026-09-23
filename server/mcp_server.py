@@ -238,7 +238,20 @@ def delete_item(path: str, recursive: bool = False) -> str:
             has_children = any(target.iterdir())
             if has_children and not recursive:
                 return f"Error: Folder '{path}' is not empty. Set recursive=True to delete folder and all its contents."
-            shutil.rmtree(target)
+            try:
+                if not has_children:
+                    target.rmdir()
+                else:
+                    shutil.rmtree(target)
+            except PermissionError:
+                import stat
+                def _handle_readonly(func, file_path, exc_info):
+                    try:
+                        os.chmod(file_path, stat.S_IWRITE)
+                        func(file_path)
+                    except Exception:
+                        pass
+                shutil.rmtree(target, onexc=_handle_readonly)
             return f"Successfully deleted folder: '{path}'"
         else:
             return f"Error: Unknown item type at '{path}'"

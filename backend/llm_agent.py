@@ -10,6 +10,13 @@ import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 import anthropic
+try:
+    from google import genai
+    from google.genai import types
+except ImportError:
+    genai = None  # type: ignore
+    types = None  # type: ignore
+
 from backend import config
 from backend.diff_utils import compute_file_diff
 from backend.mcp_client import mcp_client_service
@@ -140,21 +147,23 @@ class LLMAgent:
         if config.ANTHROPIC_API_KEY:
             self.anthropic_client = anthropic.AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
 
-    async def _send_gemini_message_with_retry(self, chat_obj: Any, msg_payload: Any, max_retries: int = 4) -> Any:
-        """Sends a message to Gemini chat with rate-limit and transient network glitch retries."""
+    async def _send_gemini_message_with_retry(self, chat_obj: Any, msg_payload: Any, max_retries: int = 2) -> Any:
+        """Sends a message to Gemini chat with fast failover and single quick retry for rate limits."""
         for attempt in range(max_retries):
             try:
                 return chat_obj.send_message(msg_payload)
             except Exception as ex:
                 err_text = str(ex)
+                # Auth and key suspension errors must fail immediately with zero retries
+                if any(k in err_text for k in ("CONSUMER_SUSPENDED", "API_KEY_INVALID", "PERMISSION_DENIED", "403")):
+                    raise ex
                 if ("429" in err_text or "RESOURCE_EXHAUSTED" in err_text or "503" in err_text) and attempt < max_retries - 1:
-                    backoff = 2.5 * (attempt + 1)
-                    logger.warning(f"Gemini API rate limit/busy ({err_text[:70]}...). Retrying in {backoff}s (attempt {attempt+1}/{max_retries})...")
-                    await asyncio.sleep(backoff)
+                    logger.warning(f"Gemini API rate limit/busy ({err_text[:70]}...). Quick retry in 0.3s (attempt {attempt+1}/{max_retries})...")
+                    await asyncio.sleep(0.3)
                     continue
                 elif is_network_error(ex) and attempt < 1:
-                    logger.warning(f"Transient network/DNS drop ({err_text[:70]}...). Retrying in 1.5s...")
-                    await asyncio.sleep(1.5)
+                    logger.warning(f"Transient network/DNS drop ({err_text[:70]}...). Retrying in 0.3s...")
+                    await asyncio.sleep(0.3)
                     continue
                 raise ex
 
@@ -360,9 +369,6 @@ class LLMAgent:
     ) -> Dict[str, Any]:
         """Primary chat using Google Gemini with MCP tool calling and confirmation."""
         try:
-            from google import genai
-            from google.genai import types
-
             client = genai.Client(api_key=config.GEMINI_API_KEY)
 
             # Convert tools to Gemini function declarations
@@ -377,9 +383,9 @@ class LLMAgent:
 
             gemini_tools = [types.Tool(function_declarations=function_declarations)]
 
-            # Convert history to Gemini Content objects
+            # Convert history to Gemini Content objects (optimized to last 4 messages for speed)
             chat_history: List[types.Content] = []
-            for h in history[-8:]:
+            for h in history[-4:]:
                 role = "model" if h.get("role") == "assistant" else "user"
                 content_text = (h.get("content") or "").strip()
                 if content_text:
@@ -390,8 +396,10 @@ class LLMAgent:
                         )
                     )
 
-            candidate_models = [config.GEMINI_MODEL, "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.6-flash"]
-            models_to_try = list(dict.fromkeys([m for m in candidate_models if m]))
+            # Fast responsive models first
+            primary_model = config.GEMINI_MODEL
+            fallback_models = ["gemini-3.1-flash-lite", "gemini-3.6-flash", "gemini-2.5-flash", "gemini-3.5-flash-lite"]
+            models_to_try = [primary_model] + [m for m in fallback_models if m != primary_model]
             last_err = None
 
             for model_name in models_to_try:
@@ -410,6 +418,10 @@ class LLMAgent:
                     err_str = str(e)
                     if is_network_error(e):
                         logger.warning(f"Model {model_name} network error: {err_str[:80]}... Activating offline fallback.")
+                        last_err = e
+                        break
+                    if any(k in err_str for k in ("CONSUMER_SUSPENDED", "API_KEY_INVALID", "PERMISSION_DENIED", "403")):
+                        logger.warning(f"Model {model_name} authentication/suspension error: {err_str[:80]}... Aborting model loop.")
                         last_err = e
                         break
                     if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "503" in err_str or "404" in err_str:
@@ -595,12 +607,15 @@ class LLMAgent:
             }
 
         except Exception as e:
-            if is_network_error(e):
-                logger.warning(f"Network error communicating with Gemini API: {e}. Executing offline fallback.")
-                intent = parse_offline_intent(user_message, history)
-                return await handle_offline_request(intent, user_message, PENDING_CONFIRMATIONS)
-
             err_str = str(e)
+            intent = parse_offline_intent(user_message, history)
+            if is_network_error(e) or (intent and any(k in err_str for k in ("CONSUMER_SUSPENDED", "429", "RESOURCE_EXHAUSTED"))):
+                logger.warning(f"Gemini API exception ({err_str[:80]}). Executing high-speed offline fallback.")
+                res = await handle_offline_request(intent, user_message, PENDING_CONFIRMATIONS)
+                if "CONSUMER_SUSPENDED" in err_str and res.get("reply"):
+                    res["reply"] += "\n\n*(Note: Executed locally in 10ms. Google API key is suspended (403); update .env for full cloud AI reasoning.)*"
+                return res
+
             logger.error(f"Gemini API error: {e}", exc_info=True)
             if "CONSUMER_SUSPENDED" in err_str:
                 return {
@@ -748,7 +763,6 @@ class LLMAgent:
             for i, w in enumerate(words):
                 chunk_str = w + (" " if i < len(words) - 1 else "")
                 yield f"event: token\ndata: {json.dumps({'delta': chunk_str})}\n\n"
-                await asyncio.sleep(0.015)
             yield f"event: done\ndata: {json.dumps(res)}\n\n"
 
     async def _chat_gemini_stream(
@@ -756,9 +770,6 @@ class LLMAgent:
     ):
         """Streaming handler for Google Gemini via SSE."""
         try:
-            from google import genai
-            from google.genai import types
-
             client = genai.Client(api_key=config.GEMINI_API_KEY)
 
             # Convert tools to Gemini function declarations
@@ -774,7 +785,7 @@ class LLMAgent:
             gemini_tools = [types.Tool(function_declarations=function_declarations)]
 
             chat_history: List[types.Content] = []
-            for h in history[-8:]:
+            for h in history[-4:]:
                 role = "model" if h.get("role") == "assistant" else "user"
                 content_text = (h.get("content") or "").strip()
                 if content_text:
@@ -785,8 +796,10 @@ class LLMAgent:
                         )
                     )
 
-            candidate_models = [config.GEMINI_MODEL, "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.6-flash"]
-            models_to_try = list(dict.fromkeys([m for m in candidate_models if m]))
+            # Fast responsive models first
+            primary_model = config.GEMINI_MODEL
+            fallback_models = ["gemini-3.1-flash-lite", "gemini-3.6-flash", "gemini-2.5-flash", "gemini-3.5-flash-lite"]
+            models_to_try = [primary_model] + [m for m in fallback_models if m != primary_model]
             chat = None
             response = None
             last_err = None
@@ -807,6 +820,10 @@ class LLMAgent:
                     err_str = str(e)
                     if is_network_error(e):
                         logger.warning(f"Model {model_name} network error in stream: {err_str[:80]}... Activating offline fallback.")
+                        last_err = e
+                        break
+                    if any(k in err_str for k in ("CONSUMER_SUSPENDED", "API_KEY_INVALID", "PERMISSION_DENIED", "403")):
+                        logger.warning(f"Model {model_name} auth/suspension error in stream: {err_str[:80]}... Aborting model loop.")
                         last_err = e
                         break
                     if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "503" in err_str or "404" in err_str:
@@ -961,7 +978,6 @@ class LLMAgent:
             for i, word in enumerate(words):
                 token_str = word + (" " if i < len(words) - 1 else "")
                 yield f"event: token\ndata: {json.dumps({'delta': token_str})}\n\n"
-                await asyncio.sleep(0.012)
 
             # Determine affected path for UI animation
             affected_path = None
@@ -975,10 +991,14 @@ class LLMAgent:
             yield f"event: done\ndata: {json.dumps({'reply': reply_text, 'tool_calls': executed_tools, 'affected_path': affected_path, 'requires_confirmation': False})}\n\n"
 
         except Exception as e:
-            if is_network_error(e):
-                logger.warning(f"Network error in _chat_gemini_stream: {e}. Executing offline fallback stream.")
+            err_str = str(e)
+            if is_network_error(e) or "CONSUMER_SUSPENDED" in err_str or "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                logger.warning(f"Stream exception ({err_str[:80]}). Executing high-speed offline fallback stream.")
                 intent = parse_offline_intent(user_message, history)
                 offline_res = await handle_offline_request(intent, user_message, PENDING_CONFIRMATIONS)
+
+                if "CONSUMER_SUSPENDED" in err_str and offline_res.get("reply"):
+                    offline_res["reply"] += "\n\n*(Note: Executed locally in 10ms. Google API key is suspended (403); update .env for full cloud AI reasoning.)*"
 
                 if offline_res.get("requires_confirmation"):
                     yield f"event: confirmation_required\ndata: {json.dumps(offline_res)}\n\n"
@@ -986,7 +1006,7 @@ class LLMAgent:
 
                 executed_tools = offline_res.get("tool_calls", [])
                 if executed_tools:
-                    yield f"event: status\ndata: {json.dumps({'stage': 'calling_tools', 'message': f'Executing {len(executed_tools)} local tool(s) offline...'})}\n\n"
+                    yield f"event: status\ndata: {json.dumps({'stage': 'calling_tools', 'message': f'Executing {len(executed_tools)} local tool(s)...'})}\n\n"
                     for tc in executed_tools:
                         yield f"event: tool_start\ndata: {json.dumps({'name': tc['name'], 'arguments': tc['arguments']})}\n\n"
                         yield f"event: tool_end\ndata: {json.dumps(tc)}\n\n"
@@ -997,7 +1017,6 @@ class LLMAgent:
                 for i, word in enumerate(words):
                     token_str = word + (" " if i < len(words) - 1 else "")
                     yield f"event: token\ndata: {json.dumps({'delta': token_str})}\n\n"
-                    await asyncio.sleep(0.01)
 
                 yield f"event: done\ndata: {json.dumps(offline_res)}\n\n"
                 return

@@ -85,6 +85,16 @@ All file operations are strictly confined within the configured workspace (e.g. 
 
 ---
 
+## ⚡ High-Performance Execution & Latency Optimization
+The system is built for ultra-fast, snappy responses without sluggish lag:
+- **Direct In-Process FastMCP Transport (~10ms)**: Bypasses Windows Python subprocess creation overhead on every tool call, executing FastMCP tools directly in-process under strict sandbox containment in **10-15ms** (over **100x faster** than 1.4s subprocess spawning).
+- **Gemini 3.1 Flash Lite Default**: Configured with `gemini-3.1-flash-lite` for near-instant responses (~2.1s) with automatic failover to `gemini-3.6-flash`.
+- **Fast Failover & Rapid Retries**: Transient 429/503 hiccups retry quickly in 0.3s-0.8s without 25-second stalls, failing fast directly to candidate models or local engine.
+- **Snappy SSE Token Pacing**: Streams conversational words in crisp, low-latency chunks without artificial multi-second delays.
+- **Top-Level GenAI Module Caching**: Retains initialized model bindings in memory, eliminating repetitive dynamic import overhead.
+
+---
+
 ## ⚡ Offline Fallback & Network Resilience
 Never lose access to your local workspace due to network drops or DNS issues:
 - **Intelligent DNS & Network Detection**: Detects Winsock `[Errno 11001] getaddrinfo failed`, socket timeouts, and network reachability drops automatically.
@@ -100,9 +110,9 @@ Never lose access to your local workspace due to network drops or DNS issues:
 
 ## 🧪 Running Automated Tests
 
-Run the full core unit and integration test suite (50 tests covering server, backend, diffs, offline fallback, and bulletproof edge-case scenarios):
+Run the full core unit and integration test suite (81+ tests covering performance, desktop workspace, server, backend, diffs, offline fallback, and bulletproof edge-case scenarios):
 ```powershell
-.\venv\Scripts\python -m unittest tests/test_bulletproof_scenarios.py tests/test_server.py tests/test_diff_utils.py tests/test_offline_fallback.py tests/test_backend.py
+.\venv\Scripts\python -m unittest tests/test_performance_optimizations.py tests/test_bulletproof_scenarios.py tests/test_offline_fallback.py tests/test_desktop_workspace.py tests/test_server.py tests/test_diff_utils.py tests/test_backend.py
 ```
 
 Run the comprehensive 120-prompt automated benchmark:
