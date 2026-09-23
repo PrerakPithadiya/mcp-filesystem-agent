@@ -30,7 +30,6 @@ An interactive, full-stack AI filesystem chatbot powered by Google Gemini and th
 
 ## Active branches
 
-- perf/fast-llm-and-direct-mcp | performance optimization | ready to merge
 - main | production / integration branch | clean
 
 ## Decisions
