@@ -6,7 +6,7 @@ An interactive, full-stack AI filesystem chatbot powered by Google Gemini and th
 
 ## Commands
 
-- test: `.\venv\Scripts\python -m unittest tests/test_bulletproof_scenarios.py tests/test_server.py tests/test_diff_utils.py tests/test_offline_fallback.py tests/test_backend.py`
+- test: `.\venv\Scripts\python -m unittest tests/test_performance_optimizations.py tests/test_bulletproof_scenarios.py tests/test_offline_fallback.py tests/test_desktop_workspace.py tests/test_server.py tests/test_diff_utils.py tests/test_backend.py`
 - benchmark: `.\venv\Scripts\python scripts/run_full_suite.py`
 - build: `cd frontend && npm run build`
 - dev-backend: `.\venv\Scripts\activate && uvicorn backend.main:app --reload --port 8000`
@@ -25,14 +25,17 @@ An interactive, full-stack AI filesystem chatbot powered by Google Gemini and th
 - [x] done: Direct Windows Desktop workspace support with system file protection and dynamic UI sync (2026-09-23)
 - [x] done: Real-time SSE token streaming, agent step badges, visual file diff & code preview modal (merged 2026-09-23)
 - [x] done: Comprehensive error-proofing, edge-case hardening & proactive resilience (50 tests passing, 2026-09-24)
+- [x] done: High-speed performance optimization (10ms in-process FastMCP, Gemini 3.1 Flash Lite default, fast 0.3s failover, rapid token streaming) (81 tests passing, 2026-09-24)
 - [ ] todo: Session persistence across page reloads (chat history & state caching)
 
 ## Active branches
 
+- perf/fast-llm-and-direct-mcp | performance optimization | ready to merge
 - main | production / integration branch | clean
 
 ## Decisions
 
+- 2026-09-24 | High-Performance Engine & Latency Optimization | Made direct in-process FastMCP execution primary (10-15ms vs 1.4s subprocess per tool call), switched default model to gemini-3.1-flash-lite (2.1s response), reduced rate-limit retry backoff from 25s to 0.3-0.8s with immediate model fallback, optimized SSE streaming pacing, and added top-level GenAI caching.
 - 2026-09-24 | Bulletproof Hardening & Proactive Resilience | Hardened path sanitization, tool argument aliasing normalization, null-byte binary and huge file safety, safe response text extraction, offline pronoun resolution, and frontend network error interception.
 - 2026-09-23 | Real-time SSE Streaming & Visual File Diffs | Implemented /api/chat/stream SSE pipeline with live agent lifecycle stages, diff computation via Python difflib, and full code preview modal.
 - 2026-09-23 | Option A: Windows Desktop Workspace via WORKSPACE_DIR | Enables direct Windows Desktop CRUD operations with protected system file exclusions (desktop.ini) and UI dynamic workspace sync.

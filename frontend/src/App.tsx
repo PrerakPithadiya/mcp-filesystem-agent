@@ -2,8 +2,6 @@ import { useState, useEffect, useRef } from 'react';
 import {
   Trash,
   FolderTree,
-  ChevronLeft,
-  ChevronRight,
 } from 'lucide-react';
 import type { ChatMessage, FileNode, HealthInfo, ToolCall } from './types';
 import { ToolBadge } from './components/ToolBadge';
@@ -109,7 +107,7 @@ export function App() {
     };
 
     checkHealthAndTree();
-    const interval = setInterval(checkHealthAndTree, 5000);
+    const interval = setInterval(checkHealthAndTree, 15000);
 
     return () => {
       active = false;
@@ -446,23 +444,7 @@ export function App() {
           onReset={handleResetWorkspace}
         />
 
-        {/* Fixed Resize Controls at Sidebar Edge */}
-        <div className="hidden lg:flex absolute right-0 top-4 flex-col gap-1 bg-[#161B22] border border-[#262D38] rounded-md p-1 shadow-lg">
-          <button
-            onClick={() => setSidebarWidth(Math.max(200, sidebarWidth - 20))}
-            className="p-1.5 rounded-md text-[#8B93A1] hover:text-[#EDEAE3] hover:bg-[#1C232C] transition-colors"
-            title="Decrease sidebar width"
-          >
-            <ChevronLeft className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={() => setSidebarWidth(Math.min(600, sidebarWidth + 20))}
-            className="p-1.5 rounded-md text-[#8B93A1] hover:text-[#EDEAE3] hover:bg-[#1C232C] transition-colors"
-            title="Increase sidebar width"
-          >
-            <ChevronRight className="w-3.5 h-3.5" />
-          </button>
-        </div>
+
       </aside>
 
       {/* Resize Handle */}
