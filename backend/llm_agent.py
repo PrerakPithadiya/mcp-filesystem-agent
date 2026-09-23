@@ -3,6 +3,7 @@ LLM Agent Module
 Integrates with Claude API (Anthropic) and Google Gemini with MCP tool calling and human-in-the-loop confirmation.
 """
 
+import asyncio
 import json
 import logging
 import uuid
@@ -10,7 +11,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import anthropic
 from backend import config
+from backend.diff_utils import compute_file_diff
 from backend.mcp_client import mcp_client_service
+from server.sandbox import get_safe_path
 
 logger = logging.getLogger("llm_agent")
 
@@ -81,14 +84,52 @@ Key Instructions:
 
 8. Security & Sandbox Boundary:
    - All filesystem operations are strictly confined within the safe workspace sandbox.
+   - When the user refers to "desktop", "my desktop", or "workspace" (e.g. 'on my desktop', 'from my desktop', 'in my workspace'), treat this as referring directly to the root of the safe workspace. Call the relevant tool with the relative path (e.g. `read_file("report.txt")` or `create_file("report.txt")`), do NOT refuse the request thinking it is outside the sandbox.
    - When a user asks to access, read, write, or delete parent directory references like '..', '../', or outside system files (e.g. 'delete ..', 'rm ..', 'read ../../PRD.md', 'list C:\\Windows'):
      * Treat '..' specifically as the parent directory path, NOT as trailing ellipsis or punctuation.
      * Do NOT treat 'delete ..' as an incomplete sentence.
      * Call the appropriate tool (e.g. `delete_item(path="..")`), which will be intercepted safely by the sandbox with a security violation, or inform the user that accessing or deleting files outside the safe workspace is prohibited.
+
+9. Workspace and Desktop Context:
+   - The safe workspace sandbox can be configured directly to the user's Desktop or dedicated workspace directory.
+   - When the user refers to "my desktop", "on desktop", "from my desktop", "workspace", or "here":
+     * Treat this as referring directly to the workspace root!
+     * NEVER refuse by claiming you cannot access their desktop — their workspace IS configured to their desktop!
+     * Execute the tool directly using the filename or folder name (e.g. `create_file(file_path="notes.txt")`).
 """
 
 # In-memory store for pending confirmations: {conf_id: {"tool": str, "arguments": dict, "prompt": str}}
 PENDING_CONFIRMATIONS: Dict[str, Dict[str, Any]] = {}
+
+
+async def _execute_tool_with_diff(tool_name: str, tool_input: Dict[str, Any]) -> Tuple[str, Optional[Dict[str, Any]]]:
+    """
+    Executes an MCP tool and, for file update/create mutations, computes
+    a line-by-line structured diff between pre- and post-mutation state.
+    """
+    old_content = ""
+    target_path = tool_input.get("file_path") or tool_input.get("path")
+    if tool_name in ("update_file", "create_file") and target_path:
+        try:
+            safe_p = get_safe_path(target_path)
+            if safe_p.exists() and safe_p.is_file():
+                old_content = safe_p.read_text(encoding="utf-8")
+        except Exception:
+            pass
+
+    result_str = await mcp_client_service.call_tool(tool_name, tool_input)
+
+    diff_data = None
+    if tool_name in ("update_file", "create_file") and target_path and not str(result_str).startswith("Error"):
+        try:
+            safe_p = get_safe_path(target_path)
+            if safe_p.exists() and safe_p.is_file():
+                new_content = safe_p.read_text(encoding="utf-8")
+                diff_data = compute_file_diff(old_content, new_content, str(target_path))
+        except Exception as ex:
+            logger.warning(f"Failed to compute diff for {target_path}: {ex}")
+
+    return str(result_str), diff_data
 
 
 class LLMAgent:
@@ -250,13 +291,16 @@ class LLMAgent:
             for tool_call in other_blocks:
                 tool_name = tool_call.name
                 tool_input = tool_call.input
-                result_str = await mcp_client_service.call_tool(tool_name, tool_input)
-                executed_tools.append({
+                result_str, diff_data = await _execute_tool_with_diff(tool_name, tool_input)
+                tool_record = {
                     "name": tool_name,
                     "arguments": tool_input,
                     "status": "success" if not result_str.startswith("Error") else "error",
                     "result": result_str,
-                })
+                }
+                if diff_data:
+                    tool_record["diff"] = diff_data
+                executed_tools.append(tool_record)
                 tool_results_content.append({
                     "type": "tool_result",
                     "tool_use_id": tool_call.id,
@@ -460,13 +504,16 @@ class LLMAgent:
                 for fc in other_fcs:
                     tool_name = fc.name
                     tool_input = dict(fc.args) if fc.args else {}
-                    result_str = await mcp_client_service.call_tool(tool_name, tool_input)
-                    executed_tools.append({
+                    result_str, diff_data = await _execute_tool_with_diff(tool_name, tool_input)
+                    tool_entry = {
                         "name": tool_name,
                         "arguments": tool_input,
                         "status": "success" if not str(result_str).startswith("Error") else "error",
                         "result": result_str,
-                    })
+                    }
+                    if diff_data:
+                        tool_entry["diff"] = diff_data
+                    executed_tools.append(tool_entry)
 
                     function_responses.append(
                         types.Part.from_function_response(
@@ -619,6 +666,285 @@ class LLMAgent:
             "tool_calls": executed_tools,
             "requires_confirmation": False,
         }
+
+    async def chat_stream(self, user_message: str, history: List[Dict[str, str]]):
+        """
+        Streams agent lifecycle and text response via Server-Sent Events (SSE).
+        Yields strings formatted as:
+            event: <type>\n
+            data: <json>\n\n
+        """
+        user_lower = user_message.strip().lower()
+        if PENDING_CONFIRMATIONS and user_lower in ("yes", "y", "confirm", "proceed", "sure", "do it"):
+            last_id = list(PENDING_CONFIRMATIONS.keys())[-1]
+            res = await self.resolve_confirmation(last_id, confirmed=True)
+            yield f"event: done\ndata: {json.dumps(res)}\n\n"
+            return
+        elif PENDING_CONFIRMATIONS and user_lower in ("no", "n", "cancel", "stop", "abort"):
+            last_id = list(PENDING_CONFIRMATIONS.keys())[-1]
+            res = await self.resolve_confirmation(last_id, confirmed=False)
+            yield f"event: done\ndata: {json.dumps(res)}\n\n"
+            return
+
+        if not config.GEMINI_API_KEY and not config.ANTHROPIC_API_KEY:
+            err_msg = "⚠️ No LLM API key configured! Please provide your `GEMINI_API_KEY` in the `.env` file."
+            yield f"event: error\ndata: {json.dumps({'error': err_msg})}\n\n"
+            return
+
+        yield f"event: status\ndata: {json.dumps({'stage': 'thinking', 'message': 'Analyzing request...'})}\n\n"
+
+        mcp_tools = await mcp_client_service.list_tools()
+
+        if self.provider == "gemini" and config.GEMINI_API_KEY:
+            async for chunk in self._chat_gemini_stream(user_message, history, mcp_tools):
+                yield chunk
+        elif config.GEMINI_API_KEY:
+            async for chunk in self._chat_gemini_stream(user_message, history, mcp_tools):
+                yield chunk
+        else:
+            # Fallback to non-streaming for alternative providers
+            res = await self.chat(user_message, history)
+            for tc in res.get("tool_calls", []):
+                yield f"event: tool_end\ndata: {json.dumps(tc)}\n\n"
+            if res.get("requires_confirmation"):
+                yield f"event: confirmation_required\ndata: {json.dumps(res)}\n\n"
+                return
+            reply = res.get("reply", "")
+            yield f"event: status\ndata: {json.dumps({'stage': 'generating', 'message': 'Generating response...'})}\n\n"
+            words = reply.split(" ")
+            for i, w in enumerate(words):
+                chunk_str = w + (" " if i < len(words) - 1 else "")
+                yield f"event: token\ndata: {json.dumps({'delta': chunk_str})}\n\n"
+                await asyncio.sleep(0.015)
+            yield f"event: done\ndata: {json.dumps(res)}\n\n"
+
+    async def _chat_gemini_stream(
+        self, user_message: str, history: List[Dict[str, str]], mcp_tools: List[Dict[str, Any]]
+    ):
+        """Streaming handler for Google Gemini via SSE."""
+        try:
+            from google import genai
+            from google.genai import types
+
+            client = genai.Client(api_key=config.GEMINI_API_KEY)
+
+            # Convert tools to Gemini function declarations
+            function_declarations = []
+            for t in mcp_tools:
+                decl = types.FunctionDeclaration(
+                    name=t["name"],
+                    description=t["description"],
+                    parameters=t.get("input_schema", {}),
+                )
+                function_declarations.append(decl)
+
+            gemini_tools = [types.Tool(function_declarations=function_declarations)]
+
+            chat_history: List[types.Content] = []
+            for h in history[-8:]:
+                role = "model" if h.get("role") == "assistant" else "user"
+                content_text = (h.get("content") or "").strip()
+                if content_text:
+                    chat_history.append(
+                        types.Content(
+                            role=role,
+                            parts=[types.Part.from_text(text=content_text)],
+                        )
+                    )
+
+            async def _send_with_retry(chat_obj, msg_payload, max_retries=4):
+                for attempt in range(max_retries):
+                    try:
+                        return chat_obj.send_message(msg_payload)
+                    except Exception as ex:
+                        err_text = str(ex)
+                        if ("429" in err_text or "RESOURCE_EXHAUSTED" in err_text or "503" in err_text) and attempt < max_retries - 1:
+                            backoff = 2.5 * (attempt + 1)
+                            logger.warning(f"Gemini API rate limit. Retrying in {backoff}s (attempt {attempt+1}/{max_retries})...")
+                            await asyncio.sleep(backoff)
+                            continue
+                        raise ex
+
+            candidate_models = [config.GEMINI_MODEL, "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.6-flash"]
+            models_to_try = list(dict.fromkeys([m for m in candidate_models if m]))
+            chat = None
+            response = None
+            last_err = None
+
+            for model_name in models_to_try:
+                try:
+                    chat = client.chats.create(
+                        model=model_name,
+                        config=types.GenerateContentConfig(
+                            system_instruction=SYSTEM_PROMPT,
+                            tools=gemini_tools,
+                        ),
+                        history=chat_history if chat_history else None,
+                    )
+                    response = await _send_with_retry(chat, user_message)
+                    break
+                except Exception as e:
+                    err_str = str(e)
+                    if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "503" in err_str or "404" in err_str:
+                        logger.warning(f"Model {model_name} failed: {err_str[:80]}... Trying fallback.")
+                        last_err = e
+                        continue
+                    raise e
+            else:
+                if last_err:
+                    yield f"event: error\ndata: {json.dumps({'error': str(last_err)})}\n\n"
+                    return
+
+            executed_tools: List[Dict[str, Any]] = []
+            max_rounds = 5
+            round_count = 0
+
+            while response.function_calls and round_count < max_rounds:
+                round_count += 1
+                function_responses = []
+
+                delete_fcs = [fc for fc in response.function_calls if fc.name == "delete_item"]
+                other_fcs = [fc for fc in response.function_calls if fc.name != "delete_item"]
+
+                if delete_fcs:
+                    delete_items = []
+                    targets_list = []
+                    for fc in delete_fcs:
+                        tool_input = dict(fc.args) if fc.args else {}
+                        target_path = str(tool_input.get("path", "unknown")).strip()
+                        is_everything = target_path.lower() in ("everything", "*", "all", "all items", "workspace", "workshop", ".")
+                        if is_everything:
+                            target_display = "everything in workspace"
+                            tool_input["recursive"] = True
+                            tool_input["path"] = "everything"
+                        else:
+                            target_display = target_path
+                            try:
+                                safe_p = get_safe_path(target_path)
+                                if safe_p.is_dir() and not tool_input.get("recursive"):
+                                    tool_input["recursive"] = True
+                            except PermissionError as pe:
+                                yield f"event: error\ndata: {json.dumps({'error': f'Security Boundary Violation: Cannot delete `{target_path}`.'})}\n\n"
+                                return
+                            except Exception:
+                                pass
+                        targets_list.append(target_display)
+                        delete_items.append({
+                            "tool": "delete_item",
+                            "arguments": tool_input,
+                            "display": target_display,
+                        })
+                        executed_tools.append({
+                            "name": "delete_item",
+                            "arguments": tool_input,
+                            "status": "pending_confirmation",
+                            "result": f"Awaiting user confirmation before deleting '{target_display}'...",
+                        })
+
+                    conf_id = f"conf_{uuid.uuid4().hex[:8]}"
+                    if len(targets_list) == 1:
+                        single_target = targets_list[0]
+                        reply_prompt = f"⚠️ **Delete Confirmation Required**:\nAre you sure you want to permanently delete **`{single_target}`**? This action cannot be undone."
+                        details_text = f"Delete '{single_target}'"
+                    else:
+                        formatted_targets = ", ".join(f"`{t}`" for t in targets_list)
+                        reply_prompt = f"⚠️ **Delete Confirmation Required**:\nAre you sure you want to permanently delete these {len(targets_list)} items: {formatted_targets}? This action cannot be undone."
+                        details_text = f"Delete {len(targets_list)} items: {', '.join(targets_list)}"
+
+                    PENDING_CONFIRMATIONS[conf_id] = {
+                        "tool": "batch_delete" if len(delete_items) > 1 else "delete_item",
+                        "items": delete_items,
+                        "display_target": ", ".join(targets_list),
+                        "prompt": user_message,
+                    }
+
+                    yield f"event: confirmation_required\ndata: {json.dumps({'reply': reply_prompt, 'requires_confirmation': True, 'confirmation': {'id': conf_id, 'action': 'delete_item', 'target': ', '.join(targets_list), 'details': details_text}, 'tool_calls': executed_tools})}\n\n"
+                    return
+
+                # Non-destructive tools
+                yield f"event: status\ndata: {json.dumps({'stage': 'calling_tools', 'message': f'Executing {len(other_fcs)} tool action(s)...'})}\n\n"
+                for fc in other_fcs:
+                    tool_name = fc.name
+                    tool_input = dict(fc.args) if fc.args else {}
+                    yield f"event: tool_start\ndata: {json.dumps({'name': tool_name, 'arguments': tool_input})}\n\n"
+                    result_str, diff_data = await _execute_tool_with_diff(tool_name, tool_input)
+                    tool_entry = {
+                        "name": tool_name,
+                        "arguments": tool_input,
+                        "status": "success" if not str(result_str).startswith("Error") else "error",
+                        "result": result_str,
+                    }
+                    if diff_data:
+                        tool_entry["diff"] = diff_data
+                    executed_tools.append(tool_entry)
+                    yield f"event: tool_end\ndata: {json.dumps(tool_entry)}\n\n"
+                    function_responses.append(
+                        types.Part.from_function_response(
+                            name=tool_name,
+                            response={"result": result_str},
+                        )
+                    )
+
+                if function_responses:
+                    response = await _send_with_retry(chat, function_responses)
+                else:
+                    break
+
+            reply_text = response.text or "Operation completed successfully."
+
+            # Safety Net 1: Intercept path traversal deletion attempts
+            user_msg_lower = user_message.strip().lower()
+            is_delete_req = any(k in user_msg_lower for k in ["delete", "remove", "wipe", "clear", "erase", "destroy", "rm"])
+            user_words = [w.strip("',\"") for w in user_msg_lower.split()]
+            is_traversal_delete = any(w in ("..", "../", "../../") for w in user_words) or any(t in user_msg_lower for t in ["/etc/", "c:\\", "c:/", "../"])
+            if is_delete_req and is_traversal_delete:
+                reply_text = "🛡️ **Security Boundary Violation**: Deleting files or directories outside the safe workspace sandbox (such as `..`) is strictly prohibited."
+                yield f"event: done\ndata: {json.dumps({'reply': reply_text, 'tool_calls': [], 'requires_confirmation': False})}\n\n"
+                return
+
+            # Safety Net 2: Workspace wipe request without tool execution
+            is_everything_req = any(k in user_msg_lower for k in ["everything", "all", "workspace", "workshop", "all files", "all folders"])
+            has_delete_tool = any(t.get("name") == "delete_item" for t in executed_tools)
+            if is_delete_req and not has_delete_tool and (is_everything_req or "confirm" in reply_text.lower() or "sure" in reply_text.lower()):
+                target_path = "everything" if is_everything_req else "item"
+                target_display = "everything in workspace" if is_everything_req else target_path
+                conf_id = f"conf_{uuid.uuid4().hex[:8]}"
+                PENDING_CONFIRMATIONS[conf_id] = {
+                    "tool": "delete_item",
+                    "arguments": {"path": target_path, "recursive": True},
+                    "prompt": user_message,
+                }
+                executed_tools.append({
+                    "name": "delete_item",
+                    "arguments": {"path": target_path, "recursive": True},
+                    "status": "pending_confirmation",
+                    "result": "Awaiting user confirmation before deleting...",
+                })
+                yield f"event: confirmation_required\ndata: {json.dumps({'reply': f'⚠️ **Delete Confirmation Required**:\nAre you sure you want to permanently delete **`{target_display}`**? This action cannot be undone.', 'requires_confirmation': True, 'confirmation': {'id': conf_id, 'action': 'delete_item', 'target': target_display, 'details': f'Delete {target_display}'}, 'tool_calls': executed_tools})}\n\n"
+                return
+
+            # Stream conversational tokens smoothly
+            yield f"event: status\ndata: {json.dumps({'stage': 'generating', 'message': 'Generating response...'})}\n\n"
+            words = reply_text.split(" ")
+            for i, word in enumerate(words):
+                token_str = word + (" " if i < len(words) - 1 else "")
+                yield f"event: token\ndata: {json.dumps({'delta': token_str})}\n\n"
+                await asyncio.sleep(0.012)
+
+            # Determine affected path for UI animation
+            affected_path = None
+            for t in executed_tools:
+                args = t.get("arguments", {})
+                p = args.get("folder_path") or args.get("file_path") or args.get("path")
+                if p and isinstance(p, str):
+                    affected_path = p
+                    break
+
+            yield f"event: done\ndata: {json.dumps({'reply': reply_text, 'tool_calls': executed_tools, 'affected_path': affected_path, 'requires_confirmation': False})}\n\n"
+
+        except Exception as e:
+            logger.error(f"Error in _chat_gemini_stream: {e}", exc_info=True)
+            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
 
 
 llm_agent = LLMAgent()

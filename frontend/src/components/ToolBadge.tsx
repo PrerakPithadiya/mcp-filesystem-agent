@@ -12,15 +12,17 @@ import {
   ChevronDown,
   ChevronRight,
   Terminal,
+  GitCommit,
 } from 'lucide-react';
 import type { ToolCall } from '../types';
+import { FileDiffViewer } from './FileDiffViewer';
 
 interface ToolBadgeProps {
   tool: ToolCall;
 }
 
 export const ToolBadge = ({ tool }: ToolBadgeProps) => {
-  const [isOpen, setIsOpen] = useState(false);
+  const [isOpen, setIsOpen] = useState(Boolean(tool.diff));
 
   const getToolIcon = (name: string) => {
     switch (name) {
@@ -90,8 +92,16 @@ export const ToolBadge = ({ tool }: ToolBadgeProps) => {
             {tool.name}
           </span>
           {argSummary && (
-            <span className="text-[11px] text-[#8B93A1] font-mono truncate max-w-[280px]">
+            <span className="text-[11px] text-[#8B93A1] font-mono truncate max-w-[240px]">
               ({argSummary})
+            </span>
+          )}
+          {tool.diff && (
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono bg-[#161B22] border border-[#262D38] text-[#C9A659]">
+              <GitCommit className="w-2.5 h-2.5" />
+              diff
+              {tool.diff.stats.added > 0 && <span className="text-[#98c379]">+{tool.diff.stats.added}</span>}
+              {tool.diff.stats.deleted > 0 && <span className="text-[#e06c75]">-{tool.diff.stats.deleted}</span>}
             </span>
           )}
         </div>
@@ -107,6 +117,15 @@ export const ToolBadge = ({ tool }: ToolBadgeProps) => {
 
       {isOpen && (
         <div className="p-3 border-t border-[#262D38] bg-[#0F1419] space-y-2.5 text-xs font-mono">
+          {tool.diff && (
+            <div>
+              <div className="text-[#8B93A1] text-[11px] mb-1 font-sans">
+                Changes applied
+              </div>
+              <FileDiffViewer diff={tool.diff} />
+            </div>
+          )}
+
           <div>
             <div className="text-[#8B93A1] text-[11px] mb-1">
               arguments

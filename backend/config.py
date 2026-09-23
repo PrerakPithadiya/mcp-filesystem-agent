@@ -16,14 +16,16 @@ load_dotenv(PROJECT_ROOT / "backend" / ".env", override=True)
 
 # LLM Configuration Helpers & Dynamic Reloading
 def reload_env():
-    """Reloads environment variables from .env files with override."""
+    """Reloads environment variables from .env files with override, preserving runtime WORKSPACE_DIR."""
+    saved_workspace = os.environ.get("WORKSPACE_DIR")
     load_dotenv(PROJECT_ROOT / ".env", override=True)
     load_dotenv(PROJECT_ROOT / "backend" / ".env", override=True)
+    if saved_workspace is not None:
+        os.environ["WORKSPACE_DIR"] = saved_workspace
 
 
 def get_workspace_path() -> Path:
     """Returns resolved workspace path from WORKSPACE_DIR or default sandbox folder."""
-    reload_env()
     workspace_dir = os.environ.get("WORKSPACE_DIR")
     if workspace_dir:
         path = Path(workspace_dir).resolve()

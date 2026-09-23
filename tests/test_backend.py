@@ -95,6 +95,15 @@ class TestBackendAPI(unittest.TestCase):
         self.assertIn("Confirmed", confirm_resp.json()["reply"])
         self.assertFalse(to_delete.exists())  # File was deleted!
 
+    def test_chat_stream_empty_message(self):
+        resp = self.client.post("/api/chat/stream", json={"message": "   "})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_chat_stream_headers(self):
+        resp = self.client.post("/api/chat/stream", json={"message": "hello"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("text/event-stream", resp.headers.get("content-type", ""))
+
 
 if __name__ == "__main__":
     unittest.main()

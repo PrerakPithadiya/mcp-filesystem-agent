@@ -10,8 +10,10 @@ import {
   FolderTree,
   Loader2,
   Check,
+  Maximize2,
 } from 'lucide-react';
 import type { FileNode } from '../types';
+import { CodePreviewModal } from './CodePreviewModal';
 
 interface WorkspaceTreeProps {
   tree: FileNode | null;
@@ -49,6 +51,7 @@ export const WorkspaceTree = ({
   } | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [isModalOpen, setIsModalOpen] = useState(false);
 
   const handleFileClick = async (path: string) => {
     try {
@@ -167,18 +170,36 @@ export const WorkspaceTree = ({
               )}
               {selectedFile.path}
             </span>
-            <button
-              onClick={() => setSelectedFile(null)}
-              className="text-[#8B93A1] hover:text-[#EDEAE3] p-0.5"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                onClick={() => setIsModalOpen(true)}
+                title="Expand Code Viewer"
+                className="text-[#8B93A1] hover:text-[#C9A659] p-0.5 transition-colors"
+              >
+                <Maximize2 className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={() => setSelectedFile(null)}
+                title="Close Preview"
+                className="text-[#8B93A1] hover:text-[#EDEAE3] p-0.5 transition-colors"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </div>
           <pre className="mt-2 text-xs font-mono text-[#EDEAE3] overflow-auto whitespace-pre-wrap flex-1 bg-[#161B22] p-2.5 rounded-md border border-[#262D38]">
             {selectedFile.content || <span className="text-[#8B93A1] italic">Empty file</span>}
           </pre>
         </div>
       )}
+
+      {/* Full Code Preview Modal */}
+      <CodePreviewModal
+        isOpen={isModalOpen}
+        filePath={selectedFile?.path ?? null}
+        content={selectedFile?.content ?? null}
+        onClose={() => setIsModalOpen(false)}
+      />
     </div>
   );
 };

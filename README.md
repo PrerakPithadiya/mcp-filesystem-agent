@@ -19,8 +19,8 @@ flowchart LR
 
 | Component | Technology | Responsibility |
 |---|---|---|
-| **Frontend** | React 19, Vite, Tailwind CSS, Lucide | Chat interface, live workspace tree, tool call badges, deletion confirmation prompt |
-| **Backend** | Python 3.12, FastAPI, Uvicorn | Orchestrates Gemini tool-calling loop, translates MCP schemas, handles confirmation gate |
+| **Frontend** | React 19, Vite, Tailwind CSS, Lucide | Chat interface, live SSE streaming consumer, agent step badges, visual diff viewer, code preview modal, deletion confirmation prompt |
+| **Backend** | Python 3.12, FastAPI, Uvicorn | Orchestrates Gemini tool-calling loop, SSE streaming (`/api/chat/stream`), computes structured diffs via `difflib`, handles confirmation gate |
 | **MCP Server** | Python `mcp` SDK (FastMCP) | Implements the 6 filesystem tools, enforces strict sandbox containment |
 | **Sandbox** | `server/sandbox.py` | Canonical path resolution preventing directory traversal (`../`, root, system paths) |
 

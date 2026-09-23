@@ -3,12 +3,14 @@ FastAPI Backend Server
 Exposes endpoints for chat, tool execution, delete confirmation, and live workspace file tree.
 """
 
+import json
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from backend import config
@@ -45,7 +47,7 @@ class ConfirmRequest(BaseModel):
 @app.get("/api/health")
 async def health_check():
     """Returns server status, active provider, and configured model."""
-    workspace = config.WORKSPACE_PATH
+    workspace = get_default_workspace()
     return {
         "status": "online",
         "provider": config.LLM_PROVIDER,
@@ -68,6 +70,33 @@ async def chat_endpoint(req: ChatRequest):
 
     result = await llm_agent.chat(req.message, req.history or [])
     return result
+
+
+@app.post("/api/chat/stream")
+async def chat_stream_endpoint(req: ChatRequest):
+    """
+    Streaming chat endpoint using Server-Sent Events (SSE).
+    Streams real-time agent status, tool execution, file diffs, and LLM text tokens.
+    """
+    if not req.message.strip():
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+    async def event_generator():
+        try:
+            async for event_chunk in llm_agent.chat_stream(req.message, req.history or []):
+                yield event_chunk
+        except Exception as e:
+            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/api/confirm")
