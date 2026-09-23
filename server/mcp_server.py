@@ -18,6 +18,9 @@ except ModuleNotFoundError:
 # Initialize FastMCP Server
 mcp = FastMCP("mcp-filesystem")
 
+# OS protected system files that must never be created, overwritten, or deleted
+PROTECTED_SYSTEM_FILES = {"desktop.ini", "thumbs.db", "$recycle.bin", ".ds_store"}
+
 
 @mcp.tool()
 def create_folder(folder_path: str) -> str:
@@ -55,6 +58,9 @@ def create_file(file_path: str, content: str = "") -> str:
     """
     try:
         target = get_safe_path(file_path)
+        if target.name.lower() in PROTECTED_SYSTEM_FILES:
+            return f"Error: Cannot create or overwrite protected system file '{target.name}'"
+
         if target.exists():
             return f"Error: File already exists at '{file_path}'. Use update_file to modify existing files."
 
@@ -111,14 +117,20 @@ def list_folder(folder_path: str = "") -> str:
         if not target.is_dir():
             return f"Error: '{folder_path}' is a file, not a directory."
 
-        entries = sorted(list(target.iterdir()), key=lambda p: (not p.is_dir(), p.name.lower()))
+        entries = sorted(
+            [p for p in target.iterdir() if p.name.lower() not in PROTECTED_SYSTEM_FILES],
+            key=lambda p: (not p.is_dir(), p.name.lower())
+        )
         if not entries:
             return f"Folder '{display_name}' is empty."
 
         lines = [f"Contents of '{display_name}':"]
         for entry in entries:
             if entry.is_dir():
-                num_items = len(list(entry.iterdir()))
+                try:
+                    num_items = len([c for c in entry.iterdir() if c.name.lower() not in PROTECTED_SYSTEM_FILES])
+                except Exception:
+                    num_items = 0
                 lines.append(f"📁 [DIR]  {entry.name}/ ({num_items} items)")
             else:
                 size_bytes = entry.stat().st_size
@@ -143,6 +155,9 @@ def update_file(file_path: str, content: str, mode: Literal["overwrite", "append
     """
     try:
         target = get_safe_path(file_path)
+        if target.name.lower() in PROTECTED_SYSTEM_FILES:
+            return f"Error: Cannot modify protected system file '{target.name}'"
+
         if not target.exists():
             return f"Error: File does not exist at '{file_path}'. Use create_file to create new files."
         if not target.is_file():
@@ -179,6 +194,8 @@ def delete_item(path: str, recursive: bool = False) -> str:
             workspace = get_default_workspace()
             deleted_items = []
             for item in list(workspace.iterdir()):
+                if item.name.lower() in PROTECTED_SYSTEM_FILES:
+                    continue
                 try:
                     if item.is_dir():
                         shutil.rmtree(item)
@@ -192,6 +209,9 @@ def delete_item(path: str, recursive: bool = False) -> str:
             return "Workspace is already empty."
 
         target = get_safe_path(path)
+        if target.name.lower() in PROTECTED_SYSTEM_FILES:
+            return f"Error: Cannot delete protected system file '{target.name}'"
+
         if not target.exists():
             return f"Error: Path does not exist: '{path}'"
 

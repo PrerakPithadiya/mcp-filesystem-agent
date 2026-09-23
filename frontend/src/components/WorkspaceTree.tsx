@@ -138,7 +138,7 @@ export const WorkspaceTree = ({
             {/* Root workspace item */}
             <div className="flex items-center gap-1.5 px-2 py-1 text-xs text-[#8B93A1] font-mono">
               <FolderOpen className="w-3.5 h-3.5 text-[#C9A659]" />
-              <span className="truncate">mcp-workspace</span>
+              <span className="truncate">{tree?.name || "workspace"}</span>
             </div>
 
             <div className="pl-3 border-l border-[#262D38]/40 ml-2 space-y-0.5">

@@ -7,6 +7,10 @@ Prevents directory traversal attacks (e.g. '../../', absolute paths, escaping sy
 import os
 from pathlib import Path
 from typing import Optional
+from dotenv import load_dotenv
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(PROJECT_ROOT / ".env", override=False)
 
 DEFAULT_WORKSPACE_NAME = "mcp-workspace"
 
@@ -17,8 +21,7 @@ def get_default_workspace() -> Path:
     if env_root:
         workspace = Path(env_root).resolve()
     else:
-        project_root = Path(__file__).resolve().parent.parent
-        workspace = project_root / DEFAULT_WORKSPACE_NAME
+        workspace = PROJECT_ROOT / DEFAULT_WORKSPACE_NAME
     workspace.mkdir(parents=True, exist_ok=True)
     return workspace
 
@@ -61,6 +64,15 @@ def get_safe_path(user_path: str, workspace_root: Optional[Path] = None) -> Path
             )
 
     cleaned_str = raw_str.replace("\\", "/")
+
+    # If the user/LLM prefixed the workspace root folder name (e.g. 'Desktop/test.txt' or 'mcp-workspace/test.txt'),
+    # strip it so we don't accidentally create a nested folder like 'Desktop/Desktop/test.txt'.
+    root_name = workspace_root.name.lower()
+    if cleaned_str.lower().startswith(root_name + "/"):
+        cleaned_str = cleaned_str[len(root_name) + 1:]
+    elif cleaned_str.lower() == root_name:
+        cleaned_str = "."
+
     target_path = (workspace_root / cleaned_str).resolve()
 
     # Strict containment check

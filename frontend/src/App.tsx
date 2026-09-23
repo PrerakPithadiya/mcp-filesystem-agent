@@ -292,8 +292,8 @@ export function App() {
             {/* Sandbox Status Indicator */}
             <div className="flex items-center gap-1.5 text-[#8B93A1] font-mono">
               <span className="w-1.5 h-1.5 rounded-full bg-[#C9A659]" />
-              <span className="hidden sm:inline">sandbox:</span>
-              <span className="text-[#EDEAE3]">mcp-workspace/</span>
+              <span className="hidden sm:inline">workspace:</span>
+              <span className="text-[#EDEAE3]">{tree?.name ? `${tree.name}/` : (health?.workspace_name ? `${health.workspace_name}/` : 'workspace/')}</span>
             </div>
 
             {/* Model Indicator */}

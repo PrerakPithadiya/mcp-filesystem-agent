@@ -36,4 +36,5 @@ export interface HealthInfo {
   has_gemini_key: boolean;
   has_anthropic_key?: boolean;
   workspace: string;
+  workspace_name?: string;
 }

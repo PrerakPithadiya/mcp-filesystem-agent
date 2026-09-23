@@ -39,10 +39,13 @@ flowchart LR
 
 ## 🚀 Quick Start Guide
 
-### 1. Configure API Key
+### 1. Configure Environment
 Open `.env` in the root folder and add your Google Gemini API key:
 ```env
 GEMINI_API_KEY=AIzaSy...
+
+# Optional: Point to Windows Desktop (defaults to ./mcp-workspace if commented out)
+WORKSPACE_DIR=C:/Users/YourUsername/OneDrive/Desktop
 ```
 
 ### 2. Launch Servers
@@ -71,7 +74,10 @@ npm run dev
 ---
 
 ## 🛡️ Security & Sandbox Guarantee
-All file operations are strictly confined within `mcp-workspace/`. Any attempt to escape via path traversal (e.g. `../../`, absolute paths, symlinks) is blocked at the sandbox layer with a `PermissionError` and returned safely to the user.
+All file operations are strictly confined within the configured workspace (e.g. your Windows Desktop or `mcp-workspace/`).
+- **Path Traversal Protection**: Any attempt to escape via path traversal (e.g. `../../`, absolute paths outside workspace, symlinks) is blocked at the sandbox layer with a `PermissionError`.
+- **System File Protection**: Critical OS files (`desktop.ini`, `thumbs.db`, `$recycle.bin`, `.ds_store`) are protected against creation, modification, deletion, and directory clutter.
+- **Redundant Root Normalization**: Requests prefixed with the workspace root name (e.g. `Desktop/projects`) are automatically normalized to target the workspace root cleanly.
 
 ---
 

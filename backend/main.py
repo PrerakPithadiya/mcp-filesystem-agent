@@ -45,13 +45,15 @@ class ConfirmRequest(BaseModel):
 @app.get("/api/health")
 async def health_check():
     """Returns server status, active provider, and configured model."""
+    workspace = config.WORKSPACE_PATH
     return {
         "status": "online",
         "provider": config.LLM_PROVIDER,
         "model": config.GEMINI_MODEL if config.LLM_PROVIDER == "gemini" else config.CLAUDE_MODEL,
         "has_gemini_key": bool(config.GEMINI_API_KEY),
         "has_anthropic_key": bool(config.ANTHROPIC_API_KEY),
-        "workspace": str(config.WORKSPACE_PATH),
+        "workspace": str(workspace),
+        "workspace_name": workspace.name,
     }
 
 
@@ -77,6 +79,9 @@ async def confirm_endpoint(req: ConfirmRequest):
     return result
 
 
+PROTECTED_SYSTEM_NAMES = {"desktop.ini", "thumbs.db", ".ds_store", "$recycle.bin"}
+
+
 def _build_tree(directory: Path, base_dir: Path) -> Dict[str, Any]:
     """Helper to build recursive JSON tree of workspace files and folders."""
     relative_path = str(directory.relative_to(base_dir)).replace("\\", "/")
@@ -85,7 +90,10 @@ def _build_tree(directory: Path, base_dir: Path) -> Dict[str, Any]:
 
     children = []
     try:
-        entries = sorted(list(directory.iterdir()), key=lambda p: (not p.is_dir(), p.name.lower()))
+        entries = sorted(
+            [p for p in directory.iterdir() if p.name.lower() not in PROTECTED_SYSTEM_NAMES],
+            key=lambda p: (not p.is_dir(), p.name.lower())
+        )
         for entry in entries:
             if entry.is_dir():
                 children.append(_build_tree(entry, base_dir))
@@ -97,11 +105,11 @@ def _build_tree(directory: Path, base_dir: Path) -> Dict[str, Any]:
                     "type": "file",
                     "size": entry.stat().st_size,
                 })
-    except Exception as e:
+    except Exception:
         pass
 
     return {
-        "name": directory.name if relative_path else "mcp-workspace",
+        "name": directory.name if relative_path else (directory.name or "workspace"),
         "path": relative_path,
         "type": "directory",
         "children": children,

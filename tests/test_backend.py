@@ -31,11 +31,15 @@ class TestBackendAPI(unittest.TestCase):
         self.assertEqual(data["status"], "online")
         self.assertIn("provider", data)
         self.assertIn("workspace", data)
+        self.assertIn("workspace_name", data)
 
     def test_workspace_tree_and_file_preview(self):
         # Create a file directly in test workspace
         test_file = self.workspace / "sample.txt"
         test_file.write_text("Hello MCP backend", encoding="utf-8")
+
+        # Create a system file that should be filtered out
+        (self.workspace / "desktop.ini").write_text("[.ShellClassInfo]", encoding="utf-8")
 
         subfolder = self.workspace / "test_folder"
         subfolder.mkdir()
@@ -45,9 +49,11 @@ class TestBackendAPI(unittest.TestCase):
         tree_resp = self.client.get("/api/workspace/tree")
         self.assertEqual(tree_resp.status_code, 200)
         tree = tree_resp.json()
+        self.assertEqual(tree["name"], self.workspace.name)
         names = [c["name"] for c in tree["children"]]
         self.assertIn("sample.txt", names)
         self.assertIn("test_folder", names)
+        self.assertNotIn("desktop.ini", names)
 
         # Test file preview
         file_resp = self.client.get("/api/workspace/file?path=sample.txt")

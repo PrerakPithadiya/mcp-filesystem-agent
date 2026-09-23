@@ -92,6 +92,33 @@ class TestSandboxAndTools(unittest.TestCase):
         self.assertIn("Successfully deleted", del_ok)
         self.assertFalse((self.workspace / "parent_folder").exists())
 
+    def test_self_root_prefix_stripping(self):
+        root_name = self.workspace.name
+        safe = get_safe_path(f"{root_name}/sub/file.txt", self.workspace)
+        self.assertEqual(safe, (self.workspace / "sub" / "file.txt").resolve())
+
+    def test_protected_system_files_protection(self):
+        # Create attempt
+        res_create = create_file("desktop.ini", "something")
+        self.assertIn("protected system file", res_create)
+
+        # Update attempt
+        res_update = update_file("desktop.ini", "something")
+        self.assertIn("protected system file", res_update)
+
+        # Delete attempt
+        res_del = delete_item("desktop.ini")
+        self.assertIn("protected system file", res_del)
+
+    def test_list_folder_excludes_protected_files(self):
+        # Create a regular file and a desktop.ini directly
+        (self.workspace / "normal.txt").write_text("hello", encoding="utf-8")
+        (self.workspace / "desktop.ini").write_text("[.ShellClassInfo]", encoding="utf-8")
+
+        listing = list_folder("")
+        self.assertIn("normal.txt", listing)
+        self.assertNotIn("desktop.ini", listing)
+
 
 if __name__ == "__main__":
     unittest.main()
