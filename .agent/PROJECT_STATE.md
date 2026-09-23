@@ -29,7 +29,6 @@ An interactive, full-stack AI filesystem chatbot powered by Google Gemini and th
 
 ## Active branches
 
-- feat/desktop-workspace | direct desktop workspace feature | active
 - main | production / integration branch | clean
 
 ## Decisions
